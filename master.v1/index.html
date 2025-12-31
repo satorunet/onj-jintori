@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>onj-Jintori</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --text-color: #f8fafc;
+            --primary-color: #0ea5e9;
+            --enemy-color: #ef4444;
+        }
+
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        /* Login Modal & Result Screen */
+        .modal {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+        }
+
+        .modal-box {
+            background: #1e293b;
+            padding: 30px;
+            border-radius: 16px;
+            text-align: center;
+            border: 1px solid #334155;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            width: 80%;
+            max-width: 400px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        .login-input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: #fff;
+            font-size: 1.1rem;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        .action-btn {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #0ea5e9, #2563eb);
+            color: #fff;
+            border: none;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(14, 165, 233, 0.3);
+            margin-top: 10px;
+        }
+
+        .action-btn:active {
+            transform: scale(0.98);
+        }
+
+        .score-panel {
+            display: flex;
+            gap: 20px;
+            pointer-events: none;
+        }
+
+        .stat-box {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(5px);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        #timer {
+            font-size: 2rem;
+            font-weight: 800;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+            flex-shrink: 0;
+            margin-left: auto;
+            /* Push it to the right if space allows, or just separate it */
+        }
+
+        /* Leaderboard */
+        #leaderboard {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            background: rgba(15, 23, 42, 0.7);
+            padding: 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            min-width: 160px;
+            backdrop-filter: blur(5px);
+        }
+
+        .lb-title {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.8;
+        }
+
+        .lb-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+            font-size: 0.9rem;
+        }
+
+        .lb-name {
+            color: #fff;
+            font-size: 8pt;
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .lb-score {
+            color: #0ea5e9;
+            font-weight: bold;
+            font-size: 8pt;
+        }
+
+        #instruction-overlay {
+            position: absolute;
+            bottom: 100px;
+            width: 100%;
+            text-align: center;
+            opacity: 0.7;
+            font-size: 0.9rem;
+            pointer-events: none;
+            text-shadow: 0 1px 2px #000;
+        }
+
+        #kill-feed {
+            position: absolute;
+            bottom: 130px;
+            width: 100%;
+            display: flex;
+            flex-direction: column-reverse;
+            align-items: center;
+            pointer-events: none;
+            gap: 4px;
+            z-index: 20;
+            text-shadow: 1px 1px 2px #000;
+            font-weight: bold;
+            color: #fbbf24;
+            font-size: 1rem;
+        }
+
+        #virtual-joystick-base {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            display: none;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        #virtual-joystick-stick {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 50px;
+            height: 50px;
+            background: rgba(14, 165, 233, 0.5);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .kill-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(220, 38, 38, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            pointer-events: none;
+        }
+
+        .kill-title {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .kill-sub {
+            font-size: 1rem;
+        }
+
+        /* Result Table */
+        .result-table {
+            width: 100%;
+            text-align: left;
+            border-collapse: collapse;
+            margin: 15px 0;
+            color: #cbd5e1;
+        }
+
+        .result-table th {
+            border-bottom: 2px solid #475569;
+            padding: 5px;
+            font-size: 8pt;
+        }
+
+        .result-table td {
+            border-bottom: 1px solid #334155;
+            padding: 4px 5px;
+            font-size: 8pt;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 80px;
+        }
+
+        .rank-1 {
+            color: #fbbf24;
+            font-weight: bold;
+        }
+
+        /* Gold */
+        .rank-2 {
+            color: #94a3b8;
+            font-weight: bold;
+        }
+
+        /* Silver */
+        .rank-3 {
+            color: #b45309;
+            font-weight: bold;
+        }
+
+        /* Bronze */
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="modal">
+        <div class="modal-box">
+            <div class="modal-title">onj-Jintori <span id="login-pcount"
+                    style="font-size:1rem; font-weight:normal; color:#cbd5e1; margin-left:10px;"></span></div>
+            <div id="login-players"
+                style="display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-bottom:15px; min-height:30px;">
+            </div>
+            <input type="text" id="username-input" class="login-input" placeholder="名前を入力 (任意)" maxlength="8">
+            <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字) (任意)" maxlength="3"
+                style="margin-top: 10px;">
+            <select id="team-select" class="login-input" style="margin-top: 10px; display:none; cursor:pointer;"
+                onchange="if(this.value) document.getElementById('team-input').value = this.value">
+                <option value="">既存チームから選択</option>
+            </select>
+            <button class="action-btn" onclick="startGame()">ゲームスタート</button>
+        </div>
+    </div>
+
+    <!-- Result Screen -->
+    <div id="result-modal" class="modal" style="display: none;">
+        <div class="modal-box">
+            <div class="modal-title" id="result-title">ラウンド終了</div>
+            <div style="display:flex; justify-content:center; margin-bottom:10px;">
+                <canvas id="result-map" width="300" height="300"
+                    style="background:rgba(0,0,0,0.5); border:1px solid #475569; width:200px; height:200px;"></canvas>
+            </div>
+            <div style="max-height: 300px; overflow-y: auto;">
+                <div style="display:flex; gap:10px;">
+                    <div id="result-team-area" style="flex:1; display:none;">
+                        <div style="font-size:0.9rem; color:#94a3b8; margin-bottom:5px; text-align:left;">チーム順位</div>
+                        <table class="result-table">
+                            <thead>
+                                <tr>
+                                    <th>順位</th>
+                                    <th>チーム</th>
+                                    <th>キル</th>
+                                    <th>スコア</th>
+                                </tr>
+                            </thead>
+                            <tbody id="result-team-body"></tbody>
+                        </table>
+                    </div>
+
+                    <div style="flex:1;">
+                        <div style="font-size:0.9rem; color:#94a3b8; margin-bottom:5px; text-align:left;">個人順位</div>
+                        <table class="result-table">
+                            <thead>
+                                <tr>
+                                    <th>順位</th>
+                                    <th>名前</th>
+                                    <th>キル</th>
+                                    <th>スコア</th>
+                                </tr>
+                            </thead>
+                            <tbody id="result-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="result-next-mode-ui"></div>
+            <div style="margin-top:10px; display:flex; gap:5px;">
+                <input type="text" id="chat-input" placeholder="コメント (最大40文字)" maxlength="40"
+                    style="flex:1; padding:8px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#fff; font-size:14px;"
+                    onkeydown="if(event.key==='Enter') sendChat()">
+                <button onclick="sendChat()"
+                    style="padding:8px 15px; border-radius:6px; background:#3b82f6; color:#fff; border:none; cursor:pointer; font-size:14px; font-weight:bold;">送信</button>
+            </div>
+            <div id="next-round-msg" style="margin-top: 15px; color: #94a3b8;">15秒後に次のラウンドへ...</div>
+        </div>
+    </div>
+
+    <div id="ui-layer">
+        <div class="score-panel">
+            <div class="stat-box">
+                <div class="stat-label">参加</div>
+                <div class="stat-value" id="pCount">0</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">点数</div>
+                <div class="stat-value" id="scoreVal">0</div>
+            </div>
+            <div id="timer">2:00</div>
+            <canvas id="minimap" width="80" height="80"
+                style="background:rgba(0,0,0,0.5); border:1px solid #475569; border-radius:4px; margin-left:15px;"></canvas>
+        </div>
+
+        <div id="leaderboard">
+            <div class="lb-title">トップランカー</div>
+            <div id="lb-list">
+                <!-- JS Populated -->
+            </div>
+            <div id="team-lb-container"
+                style="display:none; margin-top:12px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.2);">
+                <div class="lb-title">チーム</div>
+                <div id="lb-team-list"></div>
+            </div>
+        </div>
+
+        <div id="kill-feed"></div>
+
+        <div id="mode-display"
+            style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 1.2rem; font-weight: bold; color: rgba(255,255,255,0.8); text-shadow: 0 0 5px #000; pointer-events: none; text-align:center;">
+            SOLO ROUND
+        </div>
+
+        <div id="instruction-overlay">
+            &nbsp;
+        </div>
+
+        <div id="deathScreen" class="kill-msg">
+            <div class="kill-title">死亡</div>
+            <div id="deathReason" style="margin-top:10px; font-size:1.2rem; color:#f87171;"></div>
+            <div class="kill-sub">復活まで <span id="respawnTime">5</span>...</div>
+        </div>
+    </div>
+
+    <div id="nico-layer"
+        style="position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; overflow:hidden;">
+    </div>
+
+    <!-- Virtual Joystick Visuals -->
+    <div id="virtual-joystick-base">
+        <div id="virtual-joystick-stick"></div>
+    </div>
+
+    <script>
+        //       const SERVER_URL = 'wss://new-node01.open2ch.net:2087';
+        const SERVER_URL = 'wss://new-node02.open2ch.net:2053';
+
+        let canvas, ctx, width, height;
+        let socket;
+        let myId = null;
+        let world = { width: 2000, height: 2000 };
+        let camera = { x: 0, y: 0 };
+        let players = [];
+        let territories = [];
+        let obstacles = [];
+        let isGameReady = false;
+        let currentMode = 'SOLO';
+
+        let inputState = { dx: 0, dy: 0, drawing: false };
+        let touchStartPos = null;
+        let lastMinimapTime = 0;
+
+        const COLORS = {
+            self: '#0ea5e9',
+            enemy: '#ef4444',
+            obstacle: '#475569',
+            grid: 'rgba(255, 255, 255, 0.03)'
+        };
+
+        window.onload = () => {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            resize();
+            window.addEventListener('resize', resize);
+
+            // Load name & team
+            const savedName = localStorage.getItem('playerName');
+            if (savedName) document.getElementById('username-input').value = savedName;
+            const savedTeam = localStorage.getItem('playerTeam');
+            if (savedTeam) document.getElementById('team-input').value = savedTeam;
+
+            initInput();
+            connect();
+            requestAnimationFrame(loop);
+        };
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+
+        function startGame() {
+            const name = document.getElementById('username-input').value;
+            const team = document.getElementById('team-input').value;
+
+            if (name.includes('[') || name.includes(']')) {
+                alert("名前に「[」や「]」は使えません。");
+                return;
+            }
+
+            if (name) localStorage.setItem('playerName', name);
+            if (team) localStorage.setItem('playerTeam', team);
+
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: 'join', name: name, team: team }));
+                document.getElementById('login-modal').style.display = 'none';
+                isGameReady = true;
+            } else {
+                alert("サーバー接続中です。少々お待ち下さい。");
+            }
+        }
+
+        function connect() {
+            socket = new WebSocket(SERVER_URL);
+            socket.onopen = () => console.log('Connected');
+            socket.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'init') {
+                    myId = data.id;
+                    world = data.world;
+                    obstacles = data.obstacles || [];
+                    territories = data.territories || []; // Initial load
+                    if (data.teams) allTeamsData = data.teams;
+                    updateModeDisplay(data.mode);
+                    updateTeamSelect();
+                } else if (data.type === 'state') {
+                    const lp = document.getElementById('login-pcount');
+                    if (lp) lp.textContent = `(${data.players.length}人プレイ中)`;
+
+                    const li = document.getElementById('login-players');
+                    if (li && document.getElementById('login-modal').style.display !== 'none') {
+                        li.innerHTML = '';
+                        data.players.slice(0, 18).forEach(p => {
+                            const div = document.createElement('div');
+                            div.style.cssText = `width:30px; height:30px; border-radius:50%; background-color:${p.color}; display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; text-shadow:1px 1px 1px #000; box-shadow:0 2px 4px rgba(0,0,0,0.3); cursor:default;`;
+                            div.textContent = p.emoji || '😐';
+                            div.title = p.name;
+                            li.appendChild(div);
+                        });
+                    }
+
+                    if (data.teams) {
+                        allTeamsData = data.teams;
+                        if (!isGameReady) updateTeamSelect();
+                    }
+                    // Sync Players (Interpolation Setup)
+                    const newIds = new Set(data.players.map(p => p.id));
+                    data.players.forEach(serverP => {
+                        let existing = players.find(p => p.id === serverP.id);
+                        if (existing) {
+                            // Check for Teleport/Respawn (Large distance jump)
+                            const distSq = (existing.x - serverP.x) ** 2 + (existing.y - serverP.y) ** 2;
+                            if (distSq > 200 * 200) { // Threshold 200px
+                                existing.x = serverP.x;
+                                existing.y = serverP.y;
+                                existing.targetX = serverP.x;
+                                existing.targetY = serverP.y;
+                            } else {
+                                existing.targetX = serverP.x;
+                                existing.targetY = serverP.y;
+                            }
+
+                            // Sync properties
+                            existing.score = serverP.score;
+                            existing.name = serverP.name;
+                            existing.team = serverP.team;
+                            existing.color = serverP.color;
+                            existing.emoji = serverP.emoji;
+                            existing.invulnerableCount = serverP.invulnerableCount;
+                            existing.state = serverP.state;
+                            existing.trail = serverP.trail;
+                        } else {
+                            serverP.targetX = serverP.x;
+                            serverP.targetY = serverP.y;
+                            players.push(serverP);
+                        }
+                    });
+                    players = players.filter(p => newIds.has(p.id));
+
+                    if (data.territories) territories = data.territories;
+                    updateUI(data.time);
+                    updateLeaderboard();
+                    // updateCamera(); // Moved to render loop for smoothness
+                    if (!isGameReady) updateTeamSelect();
+                } else if (data.type === 'player_death') {
+                    if (data.id === myId) showDeathScreen(data.reason);
+
+                    const p = players.find(obj => obj.id === data.id);
+                    const pName = p ? (p.name || 'Unknown') : 'Unknown';
+                    let msg = "";
+                    if (data.reason.startsWith("キル: ")) {
+                        const killerName = data.reason.replace("キル: ", "");
+                        msg = `${killerName} が ${pName} を倒した！`;
+                    } else if (data.reason === "自爆") {
+                        msg = `${pName} が自爆した！`;
+                    } else if (data.reason === "壁") {
+                        msg = `${pName} が壁に衝突！`;
+                    } else {
+                        msg = `${pName} が脱落 (${data.reason})`;
+                    }
+                    addKillFeed(msg);
+                } else if (data.type === 'round_start') {
+                    if (data.world) world = data.world;
+                    hideDeathScreen();
+                    document.getElementById('result-modal').style.display = 'none'; // Hide result screen
+                    obstacles = data.obstacles || [];
+                    territories = [];
+                    updateModeDisplay(data.mode);
+                    // Clear trails locally
+                    players.forEach(p => { p.trail = []; p.gridTrail = []; });
+                    if (data.obstacles) {
+                        obstacles = data.obstacles;
+                    }
+                } else if (data.type === 'round_end') {
+                    showResultScreen(data.rankings, data.winner, data.teamRankings, data.nextMode, data.allTeams, data.totalPlayers);
+                } else if (data.type === 'chat') {
+                    spawnNicoComment(data.text, data.color, data.name);
+                }
+            };
+            socket.onclose = (e) => {
+                if (e.code === 4000) {
+                    alert("一定時間操作がなかったため切断されました。");
+                }
+                // Always reset to login screen on disconnect
+                document.getElementById('login-modal').style.display = 'flex';
+                document.getElementById('deathScreen').style.display = 'none';
+                document.getElementById('result-modal').style.display = 'none';
+                isGameReady = false;
+
+                setTimeout(connect, 3000);
+            };
+        }
+
+        let knownTeams = [];
+        let knownTeamsSerialized = '';
+        let allTeamsData = [];
+
+        function updateTeamSelect() {
+            const select = document.getElementById('team-select');
+            if (!select) return;
+
+            let currentTeams = [];
+            if (allTeamsData && allTeamsData.length > 0) {
+                currentTeams = allTeamsData;
+            } else {
+                // Fallback: Calculate from local players
+                const teamCounts = {};
+                players.forEach(p => {
+                    if (p.team) teamCounts[p.team] = (teamCounts[p.team] || 0) + 1;
+                });
+                currentTeams = Object.keys(teamCounts)
+                    .map(name => ({ name: name, count: teamCounts[name] }))
+                    .sort((a, b) => b.count - a.count);
+            }
+
+            // Update Check
+            const serialized = JSON.stringify(currentTeams);
+            if (serialized === knownTeamsSerialized) return;
+            knownTeamsSerialized = serialized;
+            knownTeams = currentTeams;
+
+            if (currentTeams.length > 0) {
+                select.style.display = 'block';
+                const val = select.value;
+                select.innerHTML = '<option value="">既存チームから選択</option>';
+                currentTeams.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t.name;
+                    opt.textContent = `${t.name} (${t.count}人)`;
+                    select.appendChild(opt);
+                });
+                if (currentTeams.some(t => t.name === val)) select.value = val;
+            } else {
+                select.style.display = 'none';
+            }
+        }
+
+        function updateCamera() {
+            if (!myId) return;
+            const me = players.find(p => p.id === myId);
+            if (me) {
+                camera.x = me.x - width / 2;
+                camera.y = me.y - height / 2;
+            }
+        }
+
+        function updateUI(time) {
+            const m = Math.floor(time / 60);
+            const s = time % 60;
+            const timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+            document.getElementById('timer').textContent = timeStr;
+            document.getElementById('pCount').textContent = players.length; // Update player count
+            const me = players.find(p => p.id === myId);
+            if (me) document.getElementById('scoreVal').textContent = me.score;
+        }
+
+        function updateLeaderboard() {
+            // 1. Personal Ranking
+            const limit = (currentMode === 'SOLO') ? 5 : 2;
+            const sorted = players.filter(p => p.state === 'active' && p.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);
+            const container = document.getElementById('lb-list');
+
+            let html = '';
+            sorted.forEach((p, i) => {
+                const rankIcon = (i === 0) ? '👑 ' : '';
+                html += `
+                    <div class="lb-row">
+                        <span class="lb-name">
+                            <span style="display:inline-block; width:24px; height:24px; border-radius:50%; background-color:${p.color}; text-align:center; line-height:24px; margin-right:6px; font-size:16px;">
+                                ${p.emoji || ''}
+                            </span>
+                            ${rankIcon}${p.name || '???'}
+                        </span>
+                        <span class="lb-score">${p.score}</span>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+
+            // 2. Team Ranking
+            const teamScores = {};
+            const totalTeamCounts = {};
+            players.forEach(p => {
+                if (p.team) {
+                    totalTeamCounts[p.team] = (totalTeamCounts[p.team] || 0) + 1;
+                }
+                if (p.state === 'active' && p.team && p.score > 0) {
+                    if (!teamScores[p.team]) teamScores[p.team] = 0;
+                    teamScores[p.team] += p.score;
+                }
+            });
+
+            const sortedTeams = Object.keys(teamScores).map(team => ({
+                name: team, score: teamScores[team]
+            })).sort((a, b) => b.score - a.score).slice(0, 2);
+
+            const teamContainer = document.getElementById('team-lb-container');
+            const teamList = document.getElementById('lb-team-list');
+
+            if (sortedTeams.length > 0) {
+                teamContainer.style.display = 'block';
+                let tHtml = '';
+                sortedTeams.forEach((t, i) => {
+                    const rankIcon = (i === 0) ? '👑 ' : '';
+                    tHtml += `
+                        <div class="lb-row">
+                            <span class="lb-name" style="font-weight:bold; color:#fbbf24;">
+                                ${rankIcon}[${t.name}] (${totalTeamCounts[t.name] || 0}人)
+                            </span>
+                            <span class="lb-score">${t.score}</span>
+                        </div>
+                    `;
+                });
+                teamList.innerHTML = tHtml;
+            } else {
+                teamContainer.style.display = 'none';
+            }
+        }
+
+        function addKillFeed(msg) {
+            const feed = document.getElementById('kill-feed');
+            const item = document.createElement('div');
+            item.textContent = msg;
+            item.style.opacity = '0';
+            item.style.transition = 'opacity 0.5s';
+            feed.prepend(item);
+
+            // Fade in
+            requestAnimationFrame(() => item.style.opacity = '1');
+
+            // Limit to 2 lines
+            while (feed.children.length > 2) {
+                feed.removeChild(feed.lastElementChild);
+            }
+
+            // Remove after 3 sec
+            setTimeout(() => {
+                if (item.parentNode) {
+                    item.style.opacity = '0';
+                    setTimeout(() => { if (item.parentNode) item.remove(); }, 500);
+                }
+            }, 3000);
+        }
+
+        function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, totalPlayers) {
+            const modal = document.getElementById('result-modal');
+            const tbody = document.getElementById('result-body');
+            const title = document.getElementById('result-title');
+
+            const countText = totalPlayers ? ` <span style="font-size:0.8rem; color:#94a3b8;">(参加: ${totalPlayers}人)</span>` : '';
+
+            if (winner && winner.id === myId) {
+                title.innerHTML = "勝利！" + countText;
+                title.style.color = "#fbbf24";
+            } else {
+                title.innerHTML = "ラウンド終了" + countText;
+                title.style.color = "#fff";
+            }
+
+            let html = '';
+
+            // Draw Result Map (Static)
+            const rCanvas = document.getElementById('result-map');
+            const rCtx = rCanvas.getContext('2d');
+            if (window.replayTimer) clearTimeout(window.replayTimer);
+            drawResultMapFrame(rCtx, territories, world.width, world.height);
+
+            if (rankings) {
+                const winnerTeam = (teamRankings && teamRankings.length > 0) ? teamRankings[0].name : null;
+                rankings.forEach((p, idx) => {
+                    let rankClass = '';
+                    if (idx === 0) rankClass = 'rank-1';
+                    if (idx === 1) rankClass = 'rank-2';
+                    if (idx === 2) rankClass = 'rank-3';
+
+                    const isTeamWinner = (winnerTeam && p.team === winnerTeam);
+                    const rankIcon = (idx === 0) ? '👑 ' : (isTeamWinner ? '👑 ' : '');
+
+                    html += `
+                        <tr class="${rankClass}">
+                            <td>#${idx + 1}</td>
+                            <td>
+                                <span style="display:inline-block; width:20px; height:20px; border-radius:50%; background-color:${p.color || '#fff'}; text-align:center; line-height:20px; margin-right:5px; font-size:14px; color:#fff; text-shadow:1px 1px 1px #000;">
+                                    ${p.emoji || ''}
+                                </span>
+                                ${rankIcon}${p.name}
+                            </td>
+                            <td style="text-align:center; font-size:0.8rem; color:#f87171;">${p.kills || 0} ⚔️</td>
+                            <td>${p.score}</td>
+                        </tr>
+                    `;
+                });
+            }
+            tbody.innerHTML = html;
+
+            // Team Rankings
+            const teamArea = document.getElementById('result-team-area');
+            const teamBody = document.getElementById('result-team-body');
+            if (teamRankings && teamRankings.length > 0) {
+                teamArea.style.display = 'block';
+                let tHtml = '';
+                teamRankings.forEach((t, idx) => {
+                    let rankClass = '';
+                    if (idx === 0) rankClass = 'rank-1';
+                    if (idx === 1) rankClass = 'rank-2';
+                    if (idx === 2) rankClass = 'rank-3';
+                    const rankIcon = (idx === 0) ? '👑 ' : '';
+
+                    tHtml += `
+                        <tr class="${rankClass}">
+                            <td>#${idx + 1}</td>
+                            <td>${rankIcon}[${t.name}]</td>
+                            <td style="text-align:center; font-size:0.8rem; color:#f87171;">${t.kills} ⚔️</td>
+                            <td>${t.score}</td>
+                        </tr>
+                     `;
+                });
+                teamBody.innerHTML = tHtml;
+            } else {
+                teamArea.style.display = 'none';
+            }
+
+            // Next Mode UI
+            const uiContainer = document.getElementById('result-next-mode-ui');
+            if (uiContainer) {
+                const isTeam = (nextMode === 'TEAM');
+                uiContainer.innerHTML = `
+                <div style="margin-top:15px; border-top:1px solid #475569; padding-top:10px; text-align:center;">
+                   <div style="color:#cbd5e1; font-size:14px;">次の試合は...</div>
+                   <div style="font-size:24px; font-weight:bold; color:#facc15; text-shadow:0 0 10px rgba(250, 204, 21, 0.5); margin:5px 0;">
+                        ${nextMode === 'TEAM' ? '🚩 チーム戦' : (nextMode === 'DUO' ? '🤝 ペア戦' : '👑 個人戦')}
+                   </div>
+                   ${isTeam ? `
+                   <div style="display:block; margin-top:10px;">
+                       <div style="font-size:12px; color:#94a3b8; margin-bottom:5px;">所属チームを選択・入力</div>
+                       <div style="display:flex; justify-content:center; gap:5px;">
+                           <input type="text" id="result-team-input" placeholder="チーム名" maxlength="3" 
+                               value="${localStorage.getItem('playerTeam') || ''}"
+                               oninput="updateResultTeam(this.value)"
+                               style="background:#1e293b; border:1px solid #475569; padding:5px; color:#fff; width:100px; text-align:center;">
+                           <select id="result-team-select" onchange="updateResultTeam(this.value)"
+                               style="background:#1e293b; border:1px solid #475569; padding:5px; color:#fff; width:100px;">
+                               <option value="">既存チーム</option>
+                           </select>
+                       </div>
+                       <div style="font-size:10px; color:#64748b; margin-top:2px;">※入力後、自動送信されます</div>
+                   </div>` : ''}
+                </div>`;
+
+                const teamsSource = (allTeams && allTeams.length > 0) ? allTeams : knownTeams;
+
+                if (isTeam && teamsSource.length > 0) {
+                    const sel = document.getElementById('result-team-select');
+                    if (sel) {
+                        sel.innerHTML = '<option value="">既存チーム</option>';
+                        teamsSource.forEach(t => {
+                            const opt = document.createElement('option');
+                            const name = t.name || t;
+                            const count = t.count || 0;
+                            opt.value = name;
+                            opt.textContent = t.name ? `${name} (${count}人)` : name;
+                            sel.appendChild(opt);
+                        });
+                    }
+                }
+            }
+
+            modal.style.display = 'flex';
+
+            const msgEl = document.getElementById('next-round-msg');
+            let seconds = 15;
+            msgEl.textContent = `${seconds}秒後に次のラウンドへ...`;
+
+            if (window.resultTimer) clearInterval(window.resultTimer);
+            window.resultTimer = setInterval(() => {
+                seconds--;
+                if (seconds >= 0) {
+                    msgEl.textContent = `${seconds}秒後に次のラウンドへ...`;
+                } else {
+                    clearInterval(window.resultTimer);
+                }
+            }, 1000);
+        }
+
+        function showDeathScreen(reason) {
+            const el = document.getElementById('deathScreen');
+            document.getElementById('deathReason').textContent = reason ? `死因: ${reason}` : '';
+            el.style.display = 'block';
+            let t = 3;
+            document.getElementById('respawnTime').textContent = t;
+            const iv = setInterval(() => {
+                t--;
+                document.getElementById('respawnTime').textContent = t;
+                if (t <= 0) {
+                    clearInterval(iv);
+                    el.style.display = 'none';
+                }
+            }, 1000);
+        }
+        function hideDeathScreen() {
+            document.getElementById('deathScreen').style.display = 'none';
+        }
+
+        function drawResultMapFrame(ctx, rects, w, h) {
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            if (!rects || !w) return;
+
+            const s = Math.min(ctx.canvas.width / w, ctx.canvas.height / h);
+            const ox = (ctx.canvas.width - w * s) / 2;
+            const oy = (ctx.canvas.height - h * s) / 2;
+
+            rects.forEach(r => {
+                const drawX = r.x * s + ox;
+                const drawY = r.y * s + oy;
+                const visW = Math.max(r.w * s, 0.5);
+                const visH = Math.max(r.h * s, 0.5);
+                ctx.fillStyle = r.color || '#cccccc';
+                ctx.fillRect(drawX, drawY, visW, visH);
+            });
+        }
+
+        // Input Handling
+        function initInput() {
+            const joyBase = document.getElementById('virtual-joystick-base');
+            const joyStick = document.getElementById('virtual-joystick-stick');
+
+            const handleStart = (x, y) => {
+                if (!isGameReady) return;
+                touchStartPos = { x, y };
+                inputState.drawing = true;
+
+                joyBase.style.display = 'block';
+                joyBase.style.left = (x - 60) + 'px';
+                joyBase.style.top = (y - 60) + 'px';
+                joyStick.style.transform = `translate(-50%, -50%)`;
+
+                sendInput();
+            };
+
+            const handleMove = (x, y) => {
+                if (!touchStartPos) return;
+
+                const deltaX = x - touchStartPos.x;
+                const deltaY = y - touchStartPos.y;
+
+                const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                const maxDist = 35;
+                const visualX = dist > maxDist ? (deltaX / dist) * maxDist : deltaX;
+                const visualY = dist > maxDist ? (deltaY / dist) * maxDist : deltaY;
+
+                joyStick.style.transform = `translate(calc(-50% + ${visualX}px), calc(-50% + ${visualY}px))`;
+
+                if (dist > 10) {
+                    inputState.dx = deltaX;
+                    inputState.dy = deltaY;
+                }
+                sendInput();
+            };
+
+            const handleEnd = () => {
+                touchStartPos = null;
+                inputState.drawing = false;
+                joyBase.style.display = 'none';
+                sendInput();
+            };
+
+            canvas.addEventListener('touchstart', e => {
+                e.preventDefault();
+                handleStart(e.touches[0].clientX, e.touches[0].clientY);
+            }, { passive: false });
+
+            canvas.addEventListener('touchmove', e => {
+                e.preventDefault();
+                handleMove(e.touches[0].clientX, e.touches[0].clientY);
+            }, { passive: false });
+
+            canvas.addEventListener('touchend', e => {
+                e.preventDefault();
+                handleEnd();
+            });
+
+            canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
+            window.addEventListener('mousemove', e => { if (touchStartPos) handleMove(e.clientX, e.clientY); });
+            window.addEventListener('mouseup', handleEnd);
+        }
+
+        function sendInput() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    type: 'input',
+                    dx: inputState.dx,
+                    dy: inputState.dy,
+                    drawing: inputState.drawing
+                }));
+            }
+        }
+
+        // Rendering
+        function loop() {
+            // Client-Side Interpolation (Smoothing)
+            players.forEach(p => {
+                if (p.targetX !== undefined) {
+                    p.x += (p.targetX - p.x) * 0.2; // Lerp 0.2
+                    p.y += (p.targetY - p.y) * 0.2;
+                }
+            });
+            updateCamera();
+
+            // Find top player and Team
+            let topId = null;
+            let maxScore = -1;
+            const teamScores = {};
+
+            if (players.length > 0) {
+                players.forEach(p => {
+                    if (p.score > maxScore) {
+                        maxScore = p.score;
+                        topId = p.id;
+                    }
+                    if (p.team && p.score > 0) {
+                        teamScores[p.team] = (teamScores[p.team] || 0) + p.score;
+                    }
+                });
+            }
+
+            let topTeam = null;
+            let maxTeamScore = -1;
+            Object.entries(teamScores).forEach(([t, s]) => {
+                if (s > maxTeamScore && s > 0) {
+                    maxTeamScore = s;
+                    topTeam = t;
+                }
+            });
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+
+            // Viewport Culling Bounds (with margin)
+            const margin = 100;
+            const viewLeft = camera.x - margin;
+            const viewRight = camera.x + width + margin;
+            const viewTop = camera.y - margin;
+            const viewBottom = camera.y + height + margin;
+
+            drawGrid();
+
+            // World Boundary
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 10;
+            ctx.strokeRect(0, 0, world.width || 3000, world.height || 3000);
+
+            // Obstacles
+            ctx.fillStyle = COLORS.obstacle;
+            obstacles.forEach(o => {
+                if (o.x + o.width < viewLeft || o.x > viewRight || o.y + o.height < viewTop || o.y > viewBottom) return;
+                ctx.fillRect(o.x, o.y, o.width, o.height);
+                ctx.strokeStyle = '#64748b';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(o.x, o.y, o.width, o.height);
+            });
+
+            // Territories rendered as unified shapes per player
+            // Territories rendered as unified shapes per TEAM/COLOR (Optimization)
+            const territoryGroups = {};
+            territories.forEach(t => {
+                const k = t.color || '#cccccc';
+                if (!territoryGroups[k]) territoryGroups[k] = [];
+                territoryGroups[k].push(t);
+            });
+
+            Object.entries(territoryGroups).forEach(([color, group]) => {
+                ctx.beginPath();
+                let hasVisible = false;
+                // Batch path construction
+                group.forEach(t => {
+                    if (t.points && t.points.length > 0) {
+                        // Culling
+                        if (t.x + t.w < viewLeft || t.x > viewRight || t.y + t.h < viewTop || t.y > viewBottom) return;
+
+                        hasVisible = true;
+                        ctx.moveTo(t.points[0].x, t.points[0].y);
+                        for (let i = 1; i < t.points.length; i++) ctx.lineTo(t.points[i].x, t.points[i].y);
+                        // Do not closePath here? If distinct rects, separate sub-paths.
+                        // ctx.closePath(); // Optional for rects but good hygiene
+                    }
+                });
+
+                if (!hasVisible) return;
+
+                // Unified Fill
+                ctx.save();
+                ctx.globalAlpha = 0.3;
+                ctx.fillStyle = color;
+
+                // Outline using Shadow (Expensive, so batching helps)
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 10;
+                ctx.fill();
+                ctx.restore();
+            });
+
+            // Players
+            players.forEach(p => {
+                if (p.state === 'dead' || p.state === 'waiting') return;
+
+                // Culling
+                let inView = (p.x + 30 >= viewLeft && p.x - 30 <= viewRight && p.y + 30 >= viewTop && p.y - 30 <= viewBottom);
+
+                // Trail Culling
+                if (!inView && p.trail && p.trail.length > 0) {
+                    // Check every 5th point for performance
+                    for (let i = 0; i < p.trail.length; i += 5) {
+                        if (p.trail[i].x >= viewLeft && p.trail[i].x <= viewRight && p.trail[i].y >= viewTop && p.trail[i].y <= viewBottom) {
+                            inView = true;
+                            break;
+                        }
+                    }
+                    if (!inView) {
+                        const last = p.trail[p.trail.length - 1];
+                        if (last.x >= viewLeft && last.x <= viewRight && last.y >= viewTop && last.y <= viewBottom) inView = true;
+                    }
+                }
+
+                if (!inView) return;
+
+                const isMe = p.id === myId;
+                const color = p.color;
+
+                // Death Animation
+                if (p.state === 'dead') {
+                    if (!p.deathTime) p.deathTime = Date.now();
+                    const age = Date.now() - p.deathTime;
+                    if (age > 2000) return; // Hide after 2s
+
+                    const t = age / 2000;
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.rotate(t * Math.PI * 6);
+                    ctx.scale(1 + t * 2, 1 + t * 2);
+                    ctx.globalAlpha = Math.max(0, 1 - t);
+
+                    ctx.fillStyle = color;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.font = '20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(p.emoji || '💀', 0, 2);
+                    ctx.restore();
+                    return; // Skip trail and normal body
+                } else {
+                    p.deathTime = 0;
+                }
+
+                // Trail (3D Cylindrical Style - Smooth)
+                if (p.trail && p.trail.length > 0) {
+                    const points = [...p.trail, { x: p.x, y: p.y }]; // Connect to head
+
+                    const drawSmoothPath = () => {
+                        ctx.beginPath();
+                        if (points.length < 2) return;
+                        ctx.moveTo(points[0].x, points[0].y);
+
+                        // Use quadratic curves for smoothing
+                        // If only 2 points, just line
+                        if (points.length === 2) {
+                            ctx.lineTo(points[1].x, points[1].y);
+                        } else {
+                            for (let i = 1; i < points.length - 2; i++) {
+                                const xc = (points[i].x + points[i + 1].x) / 2;
+                                const yc = (points[i].y + points[i + 1].y) / 2;
+                                ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+                            }
+                            // Curve through the last two points
+                            const last = points[points.length - 1];
+                            const secondLast = points[points.length - 2];
+                            ctx.quadraticCurveTo(secondLast.x, secondLast.y, last.x, last.y);
+                        }
+                    };
+
+                    // Draw Base/Shadow (Wider)
+                    drawSmoothPath();
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.lineWidth = 14;
+                    ctx.strokeStyle = 'rgba(0,0,0,0.3)'; // Shadow
+                    ctx.stroke();
+
+                    // Main Tube Color
+                    drawSmoothPath();
+                    ctx.lineWidth = 8;
+                    ctx.strokeStyle = color; // Base color
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 15;
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+
+                    // Highlight (Center)
+                    drawSmoothPath();
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; // Specular highlight
+                    ctx.stroke();
+                }
+
+
+
+                ctx.save();
+                ctx.translate(p.x, p.y);
+
+                // Invulnerability Blink & Count
+                if (p.invulnerableCount > 0) { // Check property
+                    ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 50) * 0.4;
+                }
+
+                // Body
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 15;
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(0, 0, 16, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.globalAlpha = 1.0;
+
+                // Countdown Text
+                if (p.invulnerableCount > 0) {
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(p.invulnerableCount, 0, -45); // Above name
+                }
+
+                // Emoji Face
+                ctx.font = '20px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(p.emoji || '😐', 0, 2);
+
+                // Name Label
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 4;
+
+                let displayName = p.name || 'Unknown';
+                if (p.id === topId || (topTeam && p.team === topTeam)) displayName = '👑 ' + displayName;
+                ctx.fillText(displayName, 0, -25);
+                ctx.shadowBlur = 0;
+
+                ctx.restore();
+            });
+
+            ctx.restore();
+
+            const now = Date.now();
+            if (now - lastMinimapTime > 1000) {
+                drawMinimap();
+                lastMinimapTime = now;
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        const minimapCanvas = document.getElementById('minimap');
+        const minimapCtx = minimapCanvas.getContext('2d');
+
+        function drawMinimap() {
+            if (!world || !world.width) return;
+            minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+            const s = Math.min(minimapCanvas.width / world.width, minimapCanvas.height / world.height);
+            const ox = (minimapCanvas.width - world.width * s) / 2;
+            const oy = (minimapCanvas.height - world.height * s) / 2;
+
+            // Draw Territories
+            territories.forEach(t => {
+                const drawX = t.x * s + ox;
+                const drawY = t.y * s + oy;
+                const drawW = t.w * s;
+                const drawH = t.h * s;
+
+                // Ensure visibility (min size)
+                const visW = Math.max(drawW, 0.5);
+                const visH = Math.max(drawH, 0.5);
+
+                if (t.color) {
+                    minimapCtx.fillStyle = t.color;
+                    minimapCtx.fillRect(drawX, drawY, visW, visH);
+                } else {
+                    const owner = Object.values(players).find(p => p.id === t.ownerId);
+                    if (owner) {
+                        minimapCtx.fillStyle = owner.color;
+                        minimapCtx.fillRect(drawX, drawY, visW, visH);
+                    }
+                }
+            });
+
+            // Draw Players
+            Object.values(players).forEach(p => {
+                if (p.state !== 'active') return;
+                minimapCtx.fillStyle = (p.id === myId) ? '#fff' : p.color;
+                minimapCtx.beginPath();
+                // Smaller dots for small minimap
+                minimapCtx.arc(p.x * s + ox, p.y * s + oy, (p.id === myId ? 1.5 : 1), 0, Math.PI * 2);
+                minimapCtx.fill();
+            });
+
+            // Draw Viewport Rect
+            minimapCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+            minimapCtx.lineWidth = 1;
+            minimapCtx.strokeRect(camera.x * s + ox, camera.y * s + oy, width * s, height * s);
+        }
+
+        function drawGrid() {
+            const step = 50;
+            ctx.strokeStyle = COLORS.grid;
+            ctx.lineWidth = 1;
+
+            const startX = Math.floor(camera.x / step) * step;
+            const startY = Math.floor(camera.y / step) * step;
+            const endX = startX + width + step;
+            const endY = startY + height + step;
+
+            for (let x = startX; x < endX; x += step) {
+                if (x < 0 || x > world.width) continue;
+                ctx.beginPath();
+                ctx.moveTo(x, Math.max(0, startY));
+                ctx.lineTo(x, Math.min(world.height, endY));
+                ctx.stroke();
+            }
+            for (let y = startY; y < endY; y += step) {
+                if (y < 0 || y > world.height) continue;
+                ctx.beginPath();
+                ctx.moveTo(Math.max(0, startX), y);
+                ctx.lineTo(Math.min(world.width, endX), y);
+                ctx.stroke();
+            }
+        }
+        function sendChat() {
+            const input = document.getElementById('chat-input');
+            const text = input.value;
+            if (text.trim().length > 0) {
+                socket.send(JSON.stringify({ type: 'chat', text: text }));
+                input.value = '';
+            }
+        }
+
+        function spawnNicoComment(text, color, name) {
+            const layer = document.getElementById('nico-layer');
+            const container = document.createElement('div');
+            container.style.position = 'absolute';
+            container.style.top = (Math.random() * 80) + '%';
+            container.style.left = '100%';
+            container.style.transition = 'transform 5s linear';
+            container.style.pointerEvents = 'none';
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.alignItems = 'flex-start'; // Align left or center? Stream usually left aligned text? or Center?
+            // Actually usually nico comments are just text. Adding name below means container.
+
+            const msgEl = document.createElement('div');
+            msgEl.textContent = text;
+            msgEl.style.color = color || '#fff';
+            msgEl.style.fontSize = (20 + Math.random() * 20) + 'px';
+            msgEl.style.fontWeight = 'bold';
+            msgEl.style.whiteSpace = 'nowrap';
+            msgEl.style.textShadow = '1px 1px 2px #000, -1px -1px 2px #000';
+
+            container.appendChild(msgEl);
+
+            if (name) {
+                const nameEl = document.createElement('div');
+                nameEl.textContent = name;
+                nameEl.style.color = '#e2e8f0';
+                nameEl.style.fontSize = '9pt';
+                nameEl.style.marginTop = '-2px';
+                nameEl.style.textShadow = '1px 1px 1px #000';
+                nameEl.style.whiteSpace = 'nowrap';
+                container.appendChild(nameEl);
+            }
+
+            layer.appendChild(container);
+
+            // Trigger animation
+            requestAnimationFrame(() => {
+                container.style.transform = 'translateX(-' + (window.innerWidth + container.offsetWidth + 100) + 'px)';
+            });
+
+            // Cleanup
+            setTimeout(() => {
+                container.remove();
+            }, 5000);
+        }
+        function updateModeDisplay(mode) {
+            if (!mode) return;
+            currentMode = mode;
+            const el = document.getElementById('mode-display');
+            const map = { 'SOLO': '👑 個人戦 (SOLO)', 'DUO': '🤝 ペア戦 (DUO)', 'TEAM': '🚩 チーム戦 (TEAM)' };
+            if (el) el.textContent = map[mode] || map['SOLO'];
+
+            const teamInput = document.getElementById('team-input');
+            const teamSelect = document.getElementById('team-select');
+
+            if (mode === 'TEAM') {
+                // Team mode specific UI updates if any
+            }
+        }
+        function updateResultTeam(val) {
+            const input = document.getElementById('result-team-input');
+            const sel = document.getElementById('result-team-select');
+            if (input && input.value !== val) input.value = val;
+            if (sel && sel.value !== val && val === '') sel.value = '';
+
+            localStorage.setItem('playerTeam', val);
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: 'update_team', team: val }));
+            }
+        }
+    </script>
+</body>
+
+</html>

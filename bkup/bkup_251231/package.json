@@ -1,0 +1,12 @@
+{
+  "name": "territory-game",
+  "version": "1.0.0",
+  "description": "Online territory capture game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^7.4.6"
+  }
+}
