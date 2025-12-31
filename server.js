@@ -3,6 +3,7 @@ const https = require('https');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const zlib = require('zlib');  // 圧縮率計算用
+const msgpack = require('./msgpack.js');
 
 // Debug Mode: node server.js debug または MODE=debug node server.js
 const DEBUG_MODE = process.argv.includes('debug') ||
@@ -853,12 +854,12 @@ function endRound() {
 
 
 function broadcast(msg) {
-    const s = JSON.stringify(msg);
-    const byteLen = Buffer.byteLength(s, 'utf8');
+    const payload = msgpack.encode(msg);
+    const byteLen = payload.length;
     let sentCount = 0;
     wss.clients.forEach(c => {
         if (c.readyState === WebSocket.OPEN) {
-            c.send(s);
+            c.send(payload);
             sentCount++;
         }
     });
@@ -1053,25 +1054,25 @@ setInterval(() => {
         const playerId = c.playerId;
         const lastVersion = lastFullSyncVersion[playerId] || 0;
 
-        let msgStr;
+        let payload;
         let isFullSync = false;
         // クライアントが古すぎる場合、または初回はフル同期（しきい値10に緩和）
         if (territoryVersion - lastVersion > 10 || lastVersion === 0) {
             const fullMsg = { ...stateMsg, tf: territoryRects, tv: territoryVersion };
             delete fullMsg.td;  // 差分は不要
-            msgStr = JSON.stringify(fullMsg);
+            payload = msgpack.encode(fullMsg);
             lastFullSyncVersion[playerId] = territoryVersion;
             isFullSync = true;
             bandwidthStats.periodFullSyncs++;
         } else {
-            msgStr = JSON.stringify(stateMsg);
+            payload = msgpack.encode(stateMsg);
             bandwidthStats.periodDeltaSyncs++;
         }
 
-        c.send(msgStr);
+        c.send(payload);
 
         // 転送量記録
-        const byteLen = Buffer.byteLength(msgStr, 'utf8');
+        const byteLen = payload.length;
         bandwidthStats.totalBytesSent += byteLen;
         bandwidthStats.periodBytesSent += byteLen;
         bandwidthStats.msgsSent++;
@@ -1080,7 +1081,7 @@ setInterval(() => {
         // 圧縮率サンプリング（10回に1回、フル同期時のみ）
         if (isFullSync && bandwidthStats.periodFullSyncs % 10 === 1) {
             try {
-                const compressed = zlib.deflateSync(msgStr);
+                const compressed = zlib.deflateSync(payload);
                 bandwidthStats.lastSampleOriginal = byteLen;
                 bandwidthStats.lastSampleCompressed = compressed.length;
             } catch (e) { /* ignore */ }
@@ -1169,6 +1170,8 @@ function printRoundStats() {
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════════════════════╗');
     console.log('║                📊 ラウンド終了 - 転送量統計レポート                           ║');
+    console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
+    console.log('║ ⚡ 実装中の負荷対策: [MsgPack Binary] [Delta Sync] [Gzip Comp] [Grid Merge]   ║');
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🕐 サーバー稼働: ${formatTime(uptimeSec).padEnd(15)} | ラウンド時間: ${formatTime(roundDuration)}`);
     console.log(`║ 🎮 モード: ${mode.padEnd(10)} | 接続数: ${playerCount}人 (アクティブ: ${activePlayerCount}人)`);

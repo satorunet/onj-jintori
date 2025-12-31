@@ -316,6 +316,7 @@
         /* Bronze */
     </style>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
 </head>
 
 <body>
@@ -584,9 +585,20 @@
 
         function connect() {
             socket = new WebSocket(SERVER_URL);
+            socket.binaryType = 'arraybuffer';
             socket.onopen = () => console.log('Connected');
             socket.onmessage = (e) => {
-                const data = JSON.parse(e.data);
+                let data;
+                if (e.data instanceof ArrayBuffer) {
+                    try {
+                        data = msgpack.decode(new Uint8Array(e.data));
+                    } catch (err) {
+                        console.error('MsgPack Decode Error:', err);
+                        return;
+                    }
+                } else {
+                    data = JSON.parse(e.data);
+                }
                 if (data.type === 'init') {
                     myId = data.id;
                     world = data.world;
