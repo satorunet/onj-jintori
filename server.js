@@ -1243,7 +1243,7 @@ function generateMinimapBitmap() {
 
     // 色パレット構築: 現在のプレイヤーID → インデックス (1-255)
     const palette = {};  // id -> index
-    const colors = [''];  // index 0 = 空 (透明/背景)
+    const colors = {};   // index -> hex color (オブジェクト形式で軽量化)
     let colorIdx = 1;
 
     Object.values(players).forEach(p => {
@@ -1257,6 +1257,7 @@ function generateMinimapBitmap() {
 
     // ビットマップ生成 (80x80 = 6400 bytes)
     const bitmap = new Uint8Array(MINIMAP_SIZE * MINIMAP_SIZE);
+    const usedColors = new Set(); // 実際に使われた色のみ追跡
 
     for (let my = 0; my < MINIMAP_SIZE; my++) {
         for (let mx = 0; mx < MINIMAP_SIZE; mx++) {
@@ -1269,20 +1270,27 @@ function generateMinimapBitmap() {
                 const owner = worldGrid[gy][gx];
                 if (owner && owner !== 'obstacle' && palette[owner]) {
                     bitmap[my * MINIMAP_SIZE + mx] = palette[owner];
+                    usedColors.add(palette[owner]);
                 }
                 // 0 = 空 or 障害物
             }
         }
     }
 
+    // 実際に使われた色のみのパレットを構築
+    const usedPalette = {};
+    usedColors.forEach(idx => {
+        usedPalette[idx] = colors[idx];
+    });
+
     // gzip圧縮 → Base64エンコード
     const compressed = zlib.deflateSync(Buffer.from(bitmap), { level: 6 });
     const base64 = compressed.toString('base64');
 
     return {
-        bm: base64,      // bitmap (Base64 gzip)
-        cp: colors,      // color palette (index -> hex color)
-        sz: MINIMAP_SIZE // size (常に80だが互換性のため)
+        bm: base64,        // bitmap (Base64 gzip)
+        cp: usedPalette,   // color palette (使用中のindex -> hex color のみ)
+        sz: MINIMAP_SIZE   // size (常に80だが互換性のため)
     };
 }
 
@@ -1323,16 +1331,42 @@ wss.on('connection', ws => {
 
     ws.on('message', msg => {
         // 受信量記録
-        const byteLen = Buffer.byteLength(msg, 'utf8');
+        const byteLen = msg.length || Buffer.byteLength(msg, 'utf8');
         bandwidthStats.totalBytesReceived += byteLen;
         bandwidthStats.periodBytesReceived += byteLen;
         bandwidthStats.msgsReceived++;
         bandwidthStats.periodMsgsReceived++;
 
+        const p = players[id];
+        if (!p) return;
+
+        // 1バイトバイナリ移動コマンド (新形式)
+        if (Buffer.isBuffer(msg) && msg.length === 1) {
+            bandwidthStats.received.input += byteLen;
+            if (p.state !== 'active') return;
+
+            const angleByte = msg[0];
+            p.hasMovedSinceSpawn = true;
+            p.autoRun = false;
+            p.afkDeaths = 0;
+
+            if (angleByte === 255) {
+                // 停止
+                // dx, dy は変更しない（慣性なしなので実質停止）
+            } else {
+                // 角度から dx, dy を復元
+                const normalized = angleByte / 254; // 0 〜 1
+                const angle = normalized * 2 * Math.PI - Math.PI; // -π 〜 π
+                p.dx = Math.cos(angle);
+                p.dy = Math.sin(angle);
+                p.invulnerableUntil = 0;
+            }
+            return;
+        }
+
+        // JSON形式 (旧形式 & その他コマンド)
         try {
             const data = JSON.parse(msg);
-            const p = players[id];
-            if (!p) return;
             if (data.type === 'join') {
                 bandwidthStats.received.join += byteLen;
                 let name = data.name || 'NoName';
@@ -1383,8 +1417,8 @@ wss.on('connection', ws => {
                     bandwidthStats.breakdown.other += 50; // chat送信の概算
                 }
             } else if (Array.isArray(data) && data.length === 2 && p.state === 'active') {
+                // 旧形式: [dx, dy] 配列
                 bandwidthStats.received.input += byteLen;
-                // 移動コマンド: 配列形式 [dx, dy] で最軽量化
                 const dx = data[0];
                 const dy = data[1];
                 p.hasMovedSinceSpawn = true;
@@ -1572,8 +1606,8 @@ setInterval(() => {
         bandwidthStats.msgsSent++;
         bandwidthStats.periodMsgsSent++;
 
-        // 機能別サイズ計測（サンプリング: 20回に1回のみ）
-        if (frameCount % 20 === 1) {
+        // 機能別サイズ計測（サンプリング: ミニマップ送信時のみ = 20回に1回）
+        if (frameCount % 20 === 0) {
             try {
                 // 各フィールドの推定サイズ（個別エンコード）
                 bandwidthStats.breakdown.base += msgpack.encode({ type: msg.type, tm: msg.tm }).length;

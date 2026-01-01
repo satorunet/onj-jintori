@@ -1234,10 +1234,57 @@
             window.addEventListener('mouseup', handleEnd);
         }
 
+        // 移動入力の最適化: 1バイト角度方式
+        let lastSentAngle = null;
+        let lastForceSendTime = 0;
+        const FORCE_SEND_INTERVAL = 1000; // 1秒に1回は強制送信
+        const ANGLE_STOP = 255; // 255 = 停止
+        const ANGLE_THRESHOLD = 3; // 3ステップ(約4度)以上の変化で送信
+
         function sendInput() {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                // 移動コマンド: 最小配列形式 [dx, dy]
-                socket.send(JSON.stringify([inputState.dx, inputState.dy]));
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+            const dx = inputState.dx;
+            const dy = inputState.dy;
+            const now = Date.now();
+
+            let angleByte;
+
+            // 移動しているかどうか判定
+            const magnitude = Math.sqrt(dx * dx + dy * dy);
+            if (magnitude < 0.1) {
+                // 停止
+                angleByte = ANGLE_STOP;
+            } else {
+                // 角度を計算 (atan2: -π 〜 π)
+                const angle = Math.atan2(dy, dx);
+                // 0-254 にマッピング (255は停止用に予約)
+                const normalized = (angle + Math.PI) / (2 * Math.PI); // 0 〜 1
+                angleByte = Math.round(normalized * 254) % 255; // 0 〜 254
+            }
+
+            // 変更判定: 閾値以上の変化 または 停止状態の変化
+            let angleChanged = false;
+            if (lastSentAngle === null) {
+                angleChanged = true;
+            } else if (angleByte === ANGLE_STOP || lastSentAngle === ANGLE_STOP) {
+                // 停止 ↔ 移動 の変化は即座に送信
+                angleChanged = (angleByte !== lastSentAngle);
+            } else {
+                // 角度の差を計算（循環を考慮）
+                let diff = Math.abs(angleByte - lastSentAngle);
+                if (diff > 127) diff = 255 - diff; // 循環対応
+                angleChanged = (diff >= ANGLE_THRESHOLD);
+            }
+
+            // 変更時 または 1秒経過で送信
+            const shouldSend = angleChanged || (now - lastForceSendTime > FORCE_SEND_INTERVAL);
+
+            if (shouldSend) {
+                // 1バイトバイナリで送信
+                socket.send(new Uint8Array([angleByte]));
+                lastSentAngle = angleByte;
+                lastForceSendTime = now;
             }
         }
 
