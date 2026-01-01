@@ -1194,6 +1194,20 @@ function endRound() {
             respawnPlayer(p, true);
         });
 
+        // ラウンド開始時に全員の最新情報（PM）を送信
+        const allPlayerMaster = activePlayers.map(p => ({
+            i: p.id,
+            n: p.name,
+            c: p.color,
+            e: p.emoji,
+            t: p.team || ''
+        }));
+
+        broadcast({
+            type: 'pm',
+            players: allPlayerMaster
+        });
+
         broadcast({
             type: 'round_start',
             mode: mode,
@@ -1325,6 +1339,23 @@ wss.on('connection', ws => {
         teams: getTeamStats()
     }));
 
+    // 既存プレイヤーのマスタ情報を送信
+    const existingPlayers = Object.values(players)
+        .filter(p => p.id !== id && p.name)
+        .map(p => ({
+            i: p.id,
+            n: p.name,
+            c: p.color,
+            e: p.emoji,
+            t: p.team || ''
+        }));
+    if (existingPlayers.length > 0) {
+        ws.send(JSON.stringify({
+            type: 'pm',
+            players: existingPlayers
+        }));
+    }
+
     if (!roundActive && lastResultMsg) {
         ws.send(JSON.stringify(lastResultMsg));
     }
@@ -1404,6 +1435,19 @@ wss.on('connection', ws => {
                 }
 
                 respawnPlayer(p, true);
+
+                // プレイヤーマスタを全クライアントにブロードキャスト
+                const playerMaster = {
+                    type: 'pm',
+                    players: [{
+                        i: p.id,
+                        n: p.name,
+                        c: p.color,
+                        e: p.emoji,
+                        t: p.team || ''
+                    }]
+                };
+                broadcast(playerMaster);
             } else if (data.type === 'update_team') {
                 bandwidthStats.received.updateTeam += byteLen;
                 let team = data.team || '';
@@ -1458,45 +1502,67 @@ setInterval(() => {
     if (!roundActive) return;
     frameCount++;
 
-    // 1. 全プレイヤーデータの準備（ソース）
+    // 1. 全プレイヤーデータの準備（位置情報のみ - 軽量化）
     const allPlayersData = Object.values(players).map(p => {
         const trail = p.gridTrail.length > 0
             ? p.gridTrail.map(pt => [pt.x * GRID_SIZE + 5, pt.y * GRID_SIZE + 5])
             : [];
-        return {
+
+        // st/iv統合: 0=dead, 1=active(省略), 2=waiting, 3-7=無敵中(残り秒数+2)
+        const invulSec = (p.invulnerableUntil && now < p.invulnerableUntil)
+            ? Math.ceil((p.invulnerableUntil - now) / 1000) : 0;
+        let st;
+        if (p.state === 'dead') {
+            st = 0;
+        } else if (p.state === 'waiting') {
+            st = 2;
+        } else if (invulSec > 0) {
+            st = 2 + invulSec;  // 3-7 = 無敵残り1-5秒
+        } else {
+            st = 1;  // active (後で省略される)
+        }
+
+        const data = {
             i: p.id,
             x: Math.round(p.x),
             y: Math.round(p.y),
-            c: p.color,
-            n: p.name,
-            e: p.emoji,
-            t: p.team,
-            r: trail,
-            s: p.score,
-            st: p.state === 'active' ? 1 : (p.state === 'dead' ? 0 : 2),
-            iv: (p.invulnerableUntil && now < p.invulnerableUntil) ? Math.ceil((p.invulnerableUntil - now) / 1000) : 0
+            r: trail
         };
+
+        // active(st=1)以外の時のみstを含める
+        if (st !== 1) {
+            data.st = st;
+        }
+
+        return data;
     });
 
-    // 2. ミニマップ用データ（3秒に1回生成）
-    // 新方式: ビットマップ + プレイヤー位置 (テリトリーは圧縮ビットマップ、プレイヤーは座標リスト)
+    // 2. ミニマップ＆スコアボード（3秒に1回生成）
     let minimapData = null;
+    let scoreboardData = null;
     if (frameCount % 20 === 0) { // 150ms * 20 = 3000ms (3秒)
         // テリトリービットマップ生成
         const territoryBitmap = generateMinimapBitmap();
 
         // プレイヤー位置（軽量: id, x, y, color のみ）
-        const playerPositions = allPlayersData.map(p => ({
-            i: p.i,
-            x: p.x,
-            y: p.y,
-            c: p.c
+        const playerPositions = Object.values(players).map(p => ({
+            i: p.id,
+            x: Math.round(p.x),
+            y: Math.round(p.y),
+            c: p.color
         }));
 
         minimapData = {
             tb: territoryBitmap,  // territory bitmap { bm, cp, sz }
             pl: playerPositions   // player list
         };
+
+        // スコアボード（3秒ごと）
+        scoreboardData = Object.values(players).map(p => ({
+            i: p.id,
+            s: p.score,
+            k: p.kills || 0
+        }));
     }
 
     // 3. 共通ステート（領土情報など）
@@ -1581,6 +1647,11 @@ setInterval(() => {
         // ミニマップデータを添付（該当時のみ）
         if (minimapData) {
             msg.mm = minimapData;
+        }
+
+        // スコアボードを添付（3秒ごと）
+        if (scoreboardData) {
+            msg.sb = scoreboardData;
         }
 
         // フル同期チェック

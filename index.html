@@ -477,6 +477,11 @@
         let minimapBitmapData = null;  // { imageData, palette, size }
         let minimapPlayerPositions = []; // プレイヤー位置リスト
 
+        // プレイヤーマスタ（静的データ）キャッシュ: id -> { name, color, emoji, team }
+        let playerProfiles = {};
+        // スコアボードキャッシュ: id -> { score, kills }
+        let playerScores = {};
+
         const COLORS = {
             self: '#0ea5e9',
             enemy: '#ef4444',
@@ -622,10 +627,41 @@
                     if (data.teams) allTeamsData = data.teams;
                     updateModeDisplay(data.mode);
                     updateTeamSelect();
+                } else if (data.type === 'pm') {
+                    // プレイヤーマスタ（静的データ）更新
+                    if (data.players) {
+                        data.players.forEach(p => {
+                            const pid = p.i || p.id;
+                            playerProfiles[pid] = {
+                                name: p.n || p.name,
+                                color: p.c || p.color,
+                                emoji: p.e || p.emoji,
+                                team: p.t || p.team
+                            };
+
+                            // 既存のプレイヤー情報も即時更新
+                            const existing = players.find(ep => ep.id === pid);
+                            if (existing) {
+                                Object.assign(existing, playerProfiles[pid]);
+                            }
+                        });
+                    }
                 } else if (data.type === 's' || data.type === 'state') {
                     // 新形式 's' と旧形式 'state' の両方に対応
                     const playersData = data.p || data.players || [];
                     const minimapData = data.mm; // ミニマップデータ (3秒に1回)
+                    const scoreboardData = data.sb; // スコアボードデータ (3秒に1回)
+
+                    // スコアボード更新
+                    if (scoreboardData) {
+                        scoreboardData.forEach(s => {
+                            const pid = s.i || s.id;
+                            playerScores[pid] = {
+                                score: s.s !== undefined ? s.s : s.score,
+                                kills: s.k !== undefined ? s.k : s.kills
+                            };
+                        });
+                    }
 
                     const lp = document.getElementById('login-pcount');
                     // 人数表示（ミニマップデータがあれば正確、なければ近くのプレイヤー数）
@@ -635,14 +671,17 @@
                     // ログイン画面のアイコン表示（近くの人のみ更新でOK）
                     const li = document.getElementById('login-players');
                     if (li && document.getElementById('login-modal').style.display !== 'none') {
-                        // 頻繁な書き換えを防ぐため、簡易実装のまま
                         li.innerHTML = '';
                         // 自分に近い上位18人のみ表示
                         playersData.slice(0, 18).forEach(p => {
                             const div = document.createElement('div');
-                            const color = p.c || p.color;
-                            const emoji = p.e || p.emoji;
-                            const name = p.n || p.name;
+                            // 静的データはキャッシュから優先取得
+                            const pid = p.i || p.id;
+                            const profile = playerProfiles[pid] || {};
+                            const color = profile.color || p.c || p.color || '#ccc';
+                            const emoji = profile.emoji || p.e || p.emoji;
+                            const name = profile.name || p.n || p.name || 'Unknown';
+
                             div.style.cssText = `width:30px; height:30px; border-radius:50%; background-color:${color}; display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; text-shadow:1px 1px 1px #000; box-shadow:0 2px 4px rgba(0,0,0,0.3); cursor:default;`;
                             div.textContent = emoji || '😐';
                             div.title = name;
@@ -662,19 +701,46 @@
                         const sId = serverP.i || serverP.id;
                         detailsIds.add(sId);
 
+                        // キャッシュから情報を取得
+                        const profile = playerProfiles[sId] || {};
+                        const scoreData = playerScores[sId] || { score: 0 };
+
+                        // ステータス復元 (v4: st/iv統合)
+                        // st: 0=dead, 1=active, 2=waiting, 3+=invulnerable
+                        let state = 'active';
+                        let invulnerableCount = 0;
+
+                        if (serverP.st !== undefined) {
+                            if (serverP.st === 0) state = 'dead';
+                            else if (serverP.st === 2) state = 'waiting';
+                            else if (serverP.st >= 3) {
+                                state = 'active';
+                                invulnerableCount = serverP.st - 2;
+                            }
+                        } else if (serverP.state) {
+                            // 旧互換
+                            state = serverP.state;
+                        }
+                        // ※ st省略時は初期値 active, invulnerableCount 0
+
                         // 正規化
                         const normalized = {
                             id: sId,
                             x: serverP.x,
                             y: serverP.y,
-                            color: serverP.c || serverP.color,
-                            name: serverP.n || serverP.name,
-                            emoji: serverP.e || serverP.emoji,
-                            team: serverP.t || serverP.team,
+                            // 静的データ (v4: 初回のみ送信されるためキャッシュを利用)
+                            color: profile.color || serverP.c || serverP.color,
+                            name: profile.name || serverP.n || serverP.name,
+                            emoji: profile.emoji || serverP.e || serverP.emoji,
+                            team: profile.team || serverP.t || serverP.team,
+
                             trail: (serverP.r || serverP.trail || []).map(pt => Array.isArray(pt) ? { x: pt[0], y: pt[1] } : pt),
-                            score: serverP.s !== undefined ? serverP.s : serverP.score,
-                            state: serverP.st !== undefined ? (serverP.st === 1 ? 'active' : (serverP.st === 0 ? 'dead' : 'waiting')) : serverP.state,
-                            invulnerableCount: serverP.iv !== undefined ? serverP.iv : serverP.invulnerableCount
+
+                            // スコア (v4: 3秒更新なのでキャッシュを利用、serverPにあれば優先)
+                            score: serverP.s !== undefined ? serverP.s : (scoreData.score || 0),
+
+                            state: state,
+                            invulnerableCount: serverP.iv !== undefined ? serverP.iv : invulnerableCount // v4ではserverP.ivは無いが互換性のため
                         };
 
                         let existing = players.find(p => p.id === normalized.id);
@@ -688,11 +754,13 @@
                             existing.targetX = normalized.x;
                             existing.targetY = normalized.y;
 
-                            existing.score = normalized.score;
-                            existing.name = normalized.name;
-                            existing.team = normalized.team;
-                            existing.color = normalized.color;
-                            existing.emoji = normalized.emoji;
+                            if (normalized.score !== undefined) existing.score = normalized.score;
+                            // 静的データはnullでない場合のみ更新（serverPに含まれていないため）
+                            if (normalized.name) existing.name = normalized.name;
+                            if (normalized.team) existing.team = normalized.team;
+                            if (normalized.color) existing.color = normalized.color;
+                            if (normalized.emoji) existing.emoji = normalized.emoji;
+
                             existing.invulnerableCount = normalized.invulnerableCount;
                             existing.state = normalized.state;
                             existing.trail = normalized.trail;
@@ -770,7 +838,15 @@
                         });
 
                         // 削除処理: minimapDataに含まれないプレイヤーは完全に切断されたとみなす
-                        players = players.filter(p => minimapIds.has(p.id));
+                        players = players.filter(p => {
+                            const keep = minimapIds.has(p.id);
+                            if (!keep) {
+                                // キャッシュからも削除 (GC)
+                                delete playerProfiles[p.id];
+                                delete playerScores[p.id];
+                            }
+                            return keep;
+                        });
                     }
                     // 注意: minimapDataがないフレームでは、playersの削除を行わない（AOI範囲外になっただけの可能性があるため）
 
