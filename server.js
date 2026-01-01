@@ -129,10 +129,19 @@ let bandwidthStats = {
         input: 0,           // 移動入力 [dx, dy]
         join: 0,            // 参加リクエスト
         chat: 0,            // チャット
-        updateTeam: 0,      // チーム更新
+        updateTeam: 0,      // チーム変更
         other: 0            // その他
     }
 };
+
+// 80x80 ミニマップビットマップ用のキャッシュ
+const MINIMAP_SIZE = 80;
+const MINIMAP_PALETTE_MAX = 64; // パレット最大色数
+let minimapBitmapCache = null;
+
+// テリトリーフル同期用圧縮データキャッシュ
+let cachedTerritoryArchive = null;
+let territoryArchiveVersion = -1;
 
 let obstacles = [];
 let timeRemaining = GAME_DURATION;
@@ -141,9 +150,9 @@ let lastRoundWinner = null;
 let lastResultMsg = null;
 
 // ミニマップビットマップ設定
-const MINIMAP_SIZE = 80;  // 80x80ピクセル
+// const MINIMAP_SIZE = 80;  // 80x80ピクセル // Duplicate definition removed
 const MINIMAP_SCALE = WORLD_WIDTH / MINIMAP_SIZE;  // ダウンサンプル比率
-let minimapBitmapCache = null;  // 生成されたビットマップキャッシュ
+// let minimapBitmapCache = null;  // 生成されたビットマップキャッシュ // Duplicate definition removed
 let minimapColorPalette = {};   // プレイヤーID → 色インデックス (1-255, 0は空)
 
 // Initialization
@@ -1297,20 +1306,39 @@ function generateMinimapBitmap() {
         usedPalette[idx] = colors[idx];
     });
 
-    // gzip圧縮 → Base64エンコード
+    // gzip圧縮 (Bufferのまま送信)
+    // MsgPackがBinaryをサポートしているのでBase64化は不要
     const compressed = zlib.deflateSync(Buffer.from(bitmap), { level: 6 });
-    const base64 = compressed.toString('base64');
+    // const base64 = compressed.toString('base64');
 
     return {
-        bm: base64,        // bitmap (Base64 gzip)
+        bm: compressed,    // bitmap (Binary gzip)
         cp: usedPalette,   // color palette (使用中のindex -> hex color のみ)
         sz: MINIMAP_SIZE   // size (常に80だが互換性のため)
     };
 }
 
+// Short ID Management (1-65535)
+let nextShortId = 1;
+const usedShortIds = new Set();
+function generateShortId() {
+    let limit = 65535;
+    while (limit > 0) {
+        const id = nextShortId++;
+        if (nextShortId > 65535) nextShortId = 1;
+        if (!usedShortIds.has(id)) {
+            usedShortIds.add(id);
+            return id;
+        }
+        limit--;
+    }
+    return 0;
+}
+
 // Network
 wss.on('connection', ws => {
     const id = generateId();
+    const shortId = generateShortId(); // Assign Short ID
     const color = getUniqueColor();
     const emoji = getRandomEmoji();
 
@@ -1319,7 +1347,7 @@ wss.on('connection', ws => {
     lastFullSyncVersion[id] = territoryVersion;
 
     players[id] = {
-        id, color, emoji, name: id.substr(0, 2),
+        id, shortId, color, emoji, name: id.substr(0, 2),
         x: 0, y: 0, dx: 0, dy: 0,
         gridTrail: [], trail: [],
         score: 0, state: 'waiting',
@@ -1331,6 +1359,7 @@ wss.on('connection', ws => {
     // 初期データ送信（テリトリーバージョン含む）
     ws.send(JSON.stringify({
         type: 'init', id, color, emoji,
+        si: shortId, // 自分自身のShort ID
         world: { width: WORLD_WIDTH, height: WORLD_HEIGHT },
         mode: GAME_MODES[currentModeIdx],
         obstacles,
@@ -1344,6 +1373,7 @@ wss.on('connection', ws => {
         .filter(p => p.id !== id && p.name)
         .map(p => ({
             i: p.id,
+            si: p.shortId, // Short ID
             n: p.name,
             c: p.color,
             e: p.emoji,
@@ -1416,16 +1446,27 @@ wss.on('connection', ws => {
                 } else {
                     // TEAM MODE
                     p.team = team;
+                    const TEAM_COLORS = {
+                        'RED': '#ef4444',
+                        'BLUE': '#3b82f6',
+                        'GREEN': '#22c55e',
+                        'YELLOW': '#eab308'
+                    };
                     if (team) {
                         p.name = `[${team}] ${name}`;
-                        // Team Color Inheritance
-                        const teammate = Object.values(players).find(op => op.id !== p.id && op.team === team);
-                        if (teammate) {
-                            p.color = teammate.color;
+                        // Team Color Strategy
+                        if (TEAM_COLORS[team]) {
+                            p.color = TEAM_COLORS[team];
                         } else {
-                            // First in team: Check conflict with current color
-                            const conflict = Object.values(players).some(op => op.id !== p.id && op.color === p.color);
-                            if (conflict) p.color = getUniqueColor();
+                            // Custom Team: Inheritance
+                            const teammate = Object.values(players).find(op => op.id !== p.id && op.team === team);
+                            if (teammate) {
+                                p.color = teammate.color;
+                            } else {
+                                // First in custom team: Check conflict
+                                const conflict = Object.values(players).some(op => op.id !== p.id && op.color === p.color);
+                                if (conflict) p.color = getUniqueColor();
+                            }
                         }
                     } else {
                         p.name = name;
@@ -1441,6 +1482,7 @@ wss.on('connection', ws => {
                     type: 'pm',
                     players: [{
                         i: p.id,
+                        si: p.shortId, // Short ID
                         n: p.name,
                         c: p.color,
                         e: p.emoji,
@@ -1481,6 +1523,9 @@ wss.on('connection', ws => {
         } catch (e) { }
     });
     ws.on('close', (e) => {
+        if (players[id] && players[id].shortId) {
+            usedShortIds.delete(players[id].shortId);
+        }
         delete players[id];
         delete lastFullSyncVersion[id];  // メモリリーク防止
     });
@@ -1504,9 +1549,44 @@ setInterval(() => {
 
     // 1. 全プレイヤーデータの準備（位置情報のみ - 軽量化）
     const allPlayersData = Object.values(players).map(p => {
-        const trail = p.gridTrail.length > 0
-            ? p.gridTrail.map(pt => [pt.x * GRID_SIZE + 5, pt.y * GRID_SIZE + 5])
-            : [];
+        // 軌跡の圧縮 (バイナリ化)
+        let trailBinary = null;
+        // let trail = []; // 旧形式は廃止
+
+        if (p.gridTrail && p.gridTrail.length > 1) { // 2点以上ないと描画できない
+            // Bufferサイズ: Header(4bytes) + Body(2bytes * (length-1))
+            const bufSize = 4 + (p.gridTrail.length - 1) * 2;
+            trailBinary = Buffer.allocUnsafe(bufSize);
+
+            try {
+                // Header: Start X, Start Y (UInt16: 0-65535) - グリッド座標なので十分
+                trailBinary.writeUInt16LE(p.gridTrail[0].x, 0);
+                trailBinary.writeUInt16LE(p.gridTrail[0].y, 2);
+
+                // Body: Diffs (Int8: -128 to 127)
+                let prevX = p.gridTrail[0].x;
+                let prevY = p.gridTrail[0].y;
+
+                for (let i = 1; i < p.gridTrail.length; i++) {
+                    const pt = p.gridTrail[i];
+                    let dx = pt.x - prevX;
+                    let dy = pt.y - prevY;
+
+                    // 安全策: Int8の範囲を超えた場合のクランプ（描画崩れの方がクラッシュよりマシ）
+                    dx = Math.max(-128, Math.min(127, dx));
+                    dy = Math.max(-128, Math.min(127, dy));
+
+                    trailBinary.writeInt8(dx, 4 + (i - 1) * 2);
+                    trailBinary.writeInt8(dy, 4 + (i - 1) * 2 + 1);
+
+                    prevX = pt.x;
+                    prevY = pt.y;
+                }
+            } catch (e) {
+                console.error("Trail compression error", e);
+                trailBinary = null;
+            }
+        }
 
         // st/iv統合: 0=dead, 1=active(省略), 2=waiting, 3-7=無敵中(残り秒数+2)
         const invulSec = (p.invulnerableUntil && now < p.invulnerableUntil)
@@ -1525,9 +1605,12 @@ setInterval(() => {
         const data = {
             i: p.id,
             x: Math.round(p.x),
-            y: Math.round(p.y),
-            r: trail
+            y: Math.round(p.y)
         };
+
+        if (trailBinary) {
+            data.rb = trailBinary;
+        }
 
         // active(st=1)以外の時のみstを含める
         if (st !== 1) {
@@ -1537,10 +1620,10 @@ setInterval(() => {
         return data;
     });
 
-    // 2. ミニマップ＆スコアボード（3秒に1回生成）
+    // 2. ミニマップ＆スコアボード（頻度低減: 3秒->5秒）
     let minimapData = null;
     let scoreboardData = null;
-    if (frameCount % 20 === 0) { // 150ms * 20 = 3000ms (3秒)
+    if (frameCount % 33 === 0) { // 150ms * 33 = 4950ms (約5秒)
         // テリトリービットマップ生成
         const territoryBitmap = generateMinimapBitmap();
 
@@ -1569,47 +1652,93 @@ setInterval(() => {
     const baseStateMsg = {
         type: 's',
         tm: timeRemaining,
-        te: getTeamStats()
+        // te: getTeamStats() // 毎回は送らない
     };
+
+    // チーム統計（3秒に1回）
+    if (frameCount % 20 === 0) {
+        baseStateMsg.te = getTeamStats();
+    }
 
 
     // テリトリー差分（複数のrebuildがあった場合はマージして送信）
     if (territoriesChanged) {
         if (pendingTerritoryUpdates.length > 0) {
-            // すべての差分をマージ
-            const mergedAdded = [];
-            const mergedRemoved = [];
-            const addedKeys = new Set();
-            const removedKeys = new Set();
+            // すべての差分をマージ（Mapを使って最新を優先）
+            const addedMap = new Map();
+            const removedMap = new Map();
 
             pendingTerritoryUpdates.forEach(update => {
-                // 追加をマージ（同じ座標は上書き）
-                if (update.a) {
-                    update.a.forEach(a => {
-                        const key = `${a.x},${a.y}`;
-                        if (!addedKeys.has(key)) {
-                            addedKeys.add(key);
-                            mergedAdded.push(a);
-                        }
-                    });
-                }
-                // 削除をマージ（重複を避ける）
-                if (update.r) {
-                    update.r.forEach(r => {
-                        const key = `${r.x},${r.y}`;
-                        if (!removedKeys.has(key)) {
-                            removedKeys.add(key);
-                            mergedRemoved.push(r);
-                        }
-                    });
+                if (update.a) update.a.forEach(a => addedMap.set(`${a.x},${a.y}`, a));
+                if (update.r) update.r.forEach(r => removedMap.set(`${r.x},${r.y}`, r));
+            });
+
+            // 削除された後にすぐ追加された場合、Removeは不要
+            // (クライアントが上書き処理するため。データ削減)
+            addedMap.forEach((val, key) => {
+                if (removedMap.has(key)) {
+                    removedMap.delete(key);
                 }
             });
 
-            baseStateMsg.td = {
-                v: territoryVersion,
-                a: mergedAdded,
-                r: mergedRemoved
-            };
+            const mergedAdded = Array.from(addedMap.values());
+            const mergedRemoved = Array.from(removedMap.values());
+
+            // バイナリ生成 (tb)
+            // Add: 2 + Count * 10 (x:2, y:2, w:2, h:2, sid:2)
+            // Remove: 2 + Count * 4 (x:2, y:2)
+            // Helper for Color Binary
+            function hexToRgb(hex) {
+                if (!hex || hex.length !== 7) return [128, 128, 128];
+                const r = parseInt(hex.substring(1, 3), 16);
+                const g = parseInt(hex.substring(3, 5), 16);
+                const b = parseInt(hex.substring(5, 7), 16);
+                return [r, g, b];
+            }
+
+            // バイナリ生成 (tb)
+            // Add: 2 + Count * 13 (x:2, y:2, w:2, h:2, sid:2, r:1, g:1, b:1)
+            // Remove: 2 + Count * 4 (x:2, y:2)
+            const addCount = mergedAdded.length;
+            const remCount = mergedRemoved.length;
+            const bufSize = 2 + addCount * 13 + 2 + remCount * 4;
+
+            const tb = Buffer.allocUnsafe(bufSize);
+            let offset = 0;
+
+            // Add Count
+            tb.writeUInt16LE(addCount, offset); offset += 2;
+            mergedAdded.forEach(a => {
+                tb.writeUInt16LE(a.x, offset); offset += 2;
+                tb.writeUInt16LE(a.y, offset); offset += 2;
+                tb.writeUInt16LE(a.w || 0, offset); offset += 2;
+                tb.writeUInt16LE(a.h || 0, offset); offset += 2;
+                // sidの取得
+                let sid = 0;
+                let color = '#888888';
+                if (players[a.o]) {
+                    sid = players[a.o].shortId || 0;
+                    color = players[a.o].color;
+                } else if (a.c) {
+                    color = a.c;
+                }
+                tb.writeUInt16LE(sid, offset); offset += 2;
+
+                // Color (RGB)
+                const [r, g, b] = hexToRgb(color);
+                tb.writeUInt8(r, offset); offset += 1;
+                tb.writeUInt8(g, offset); offset += 1;
+                tb.writeUInt8(b, offset); offset += 1;
+            });
+
+            // Remove Count
+            tb.writeUInt16LE(remCount, offset); offset += 2;
+            mergedRemoved.forEach(r => {
+                tb.writeUInt16LE(r.x, offset); offset += 2;
+                tb.writeUInt16LE(r.y, offset); offset += 2;
+            });
+
+            baseStateMsg.tb = tb;
             baseStateMsg.tv = territoryVersion;
 
             // 送信後にクリア
@@ -1656,8 +1785,38 @@ setInterval(() => {
 
         // フル同期チェック
         const lastVersion = lastFullSyncVersion[c.playerId] || 0;
-        if (territoryVersion - lastVersion > 50 || lastVersion === 0) {
-            msg.tf = territoryRects;
+        // 差分同期の許容範囲を200 -> 1000に拡大 (tbが軽量なため)
+        if (territoryVersion - lastVersion > 1000 || lastVersion === 0) {
+            // 圧縮テリトリーデータ生成（キャッシュ確認）
+            if (territoryArchiveVersion !== territoryVersion) {
+                try {
+                    // 軽量化: 必要なフィールドのみ抽出
+                    const simplifiedRects = territoryRects.map(t => ({
+                        o: t.o || t.ownerId,
+                        c: t.c || t.color,
+                        x: t.x,
+                        y: t.y,
+                        w: t.w,
+                        h: t.h
+                    }));
+
+                    const json = JSON.stringify(simplifiedRects);
+                    // zlib.gzipSync はBufferを返す
+                    const compressed = zlib.gzipSync(json);
+                    cachedTerritoryArchive = compressed.toString('base64');
+                    territoryArchiveVersion = territoryVersion;
+                } catch (e) {
+                    console.error('Territory compression error:', e);
+                    cachedTerritoryArchive = null;
+                }
+            }
+
+            if (cachedTerritoryArchive) {
+                msg.tfb = cachedTerritoryArchive; // tfb = territory full binary (compressed)
+            } else {
+                msg.tf = territoryRects; // Fallback
+            }
+
             msg.tv = territoryVersion;
             delete msg.td;
             lastFullSyncVersion[c.playerId] = territoryVersion;
@@ -1677,16 +1836,20 @@ setInterval(() => {
         bandwidthStats.msgsSent++;
         bandwidthStats.periodMsgsSent++;
 
-        // 機能別サイズ計測（サンプリング: ミニマップ送信時のみ = 20回に1回）
-        if (frameCount % 20 === 0) {
+        // 機能別サイズ計測
+        // サンプリング: 定期(20回に1回) または 大きなデータ(ミニマップ/フル同期)を含む場合
+        const hasLargeData = msg.mm || msg.tf || msg.tfb;
+        if (frameCount % 20 === 0 || hasLargeData) {
             try {
                 // 各フィールドの推定サイズ（個別エンコード）
                 bandwidthStats.breakdown.base += msgpack.encode({ type: msg.type, tm: msg.tm }).length;
-                bandwidthStats.breakdown.teams += msgpack.encode({ te: msg.te }).length;
-                bandwidthStats.breakdown.players += msgpack.encode({ p: msg.p }).length;
+                if (msg.te) bandwidthStats.breakdown.teams += msgpack.encode({ te: msg.te }).length;
+                if (msg.p) bandwidthStats.breakdown.players += msgpack.encode({ p: msg.p }).length;
                 if (msg.mm) bandwidthStats.breakdown.minimap += msgpack.encode({ mm: msg.mm }).length;
                 if (msg.tf) bandwidthStats.breakdown.territoryFull += msgpack.encode({ tf: msg.tf }).length;
+                if (msg.tfb) bandwidthStats.breakdown.territoryFull += msgpack.encode({ tfb: msg.tfb }).length; // 圧縮版も集計
                 if (msg.td) bandwidthStats.breakdown.territoryDelta += msgpack.encode({ td: msg.td }).length;
+                if (msg.tb) bandwidthStats.breakdown.territoryDelta += msg.tb.length + 5; // Buffer + Key overhead (approx)
             } catch (e) { /* ignore */ }
         }
     });

@@ -481,6 +481,9 @@
         let playerProfiles = {};
         // スコアボードキャッシュ: id -> { score, kills }
         let playerScores = {};
+        // Short ID キャッシュ (v8)
+        let shortIdMap = {}; // sid -> pid
+        let colorCache = {}; // sid -> color
 
         const COLORS = {
             self: '#0ea5e9',
@@ -632,12 +635,19 @@
                     if (data.players) {
                         data.players.forEach(p => {
                             const pid = p.i || p.id;
+                            const sid = p.si;
                             playerProfiles[pid] = {
                                 name: p.n || p.name,
                                 color: p.c || p.color,
                                 emoji: p.e || p.emoji,
                                 team: p.t || p.team
                             };
+
+                            // Short ID キャッシュ更新
+                            if (sid) {
+                                shortIdMap[sid] = pid;
+                                colorCache[sid] = p.c || p.color;
+                            }
 
                             // 既存のプレイヤー情報も即時更新
                             const existing = players.find(ep => ep.id === pid);
@@ -733,15 +743,41 @@
                             name: profile.name || serverP.n || serverP.name,
                             emoji: profile.emoji || serverP.e || serverP.emoji,
                             team: profile.team || serverP.t || serverP.team,
+                        };
 
-                            trail: (serverP.r || serverP.trail || []).map(pt => Array.isArray(pt) ? { x: pt[0], y: pt[1] } : pt),
+                        // 軌跡デコード (v6: rb対応)
+                        let decodedTrail = [];
+                        if (serverP.rb) {
+                            const buf = serverP.rb; // Uint8Array
+                            if (buf && buf.length >= 4) {
+                                const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+                                let cx = view.getUint16(0, true); // LE
+                                let cy = view.getUint16(2, true);
+                                decodedTrail.push({ x: cx * 10 + 5, y: cy * 10 + 5 });
+
+                                const len = Math.floor((buf.byteLength - 4) / 2);
+                                for (let i = 0; i < len; i++) {
+                                    const dx = view.getInt8(4 + i * 2);
+                                    const dy = view.getInt8(4 + i * 2 + 1);
+                                    cx += dx;
+                                    cy += dy;
+                                    decodedTrail.push({ x: cx * 10 + 5, y: cy * 10 + 5 });
+                                }
+                            }
+                        } else {
+                            decodedTrail = (serverP.r || serverP.trail || []).map(pt => Array.isArray(pt) ? { x: pt[0], y: pt[1] } : pt);
+                        }
+                        normalized.trail = decodedTrail;
+
+                        // normalized定義の続き
+                        Object.assign(normalized, {
 
                             // スコア (v4: 3秒更新なのでキャッシュを利用、serverPにあれば優先)
                             score: serverP.s !== undefined ? serverP.s : (scoreData.score || 0),
 
                             state: state,
                             invulnerableCount: serverP.iv !== undefined ? serverP.iv : invulnerableCount // v4ではserverP.ivは無いが互換性のため
-                        };
+                        });
 
                         let existing = players.find(p => p.id === normalized.id);
                         if (existing) {
@@ -784,11 +820,16 @@
                                 const palette = tb.cp;
                                 const size = tb.sz || 80;
 
-                                // Base64 → Uint8Array → pako解凍
-                                const binaryStr = atob(base64);
-                                const compressed = new Uint8Array(binaryStr.length);
-                                for (let i = 0; i < binaryStr.length; i++) {
-                                    compressed[i] = binaryStr.charCodeAt(i);
+                                // Base64 or Binary → pako解凍
+                                let compressed;
+                                if (typeof base64 === 'string') {
+                                    const binaryStr = atob(base64);
+                                    compressed = new Uint8Array(binaryStr.length);
+                                    for (let i = 0; i < binaryStr.length; i++) {
+                                        compressed[i] = binaryStr.charCodeAt(i);
+                                    }
+                                } else {
+                                    compressed = base64; // Uint8Array from MsgPack
                                 }
                                 const bitmap = pako.inflate(compressed);
 
@@ -851,13 +892,77 @@
                     // 注意: minimapDataがないフレームでは、playersの削除を行わない（AOI範囲外になっただけの可能性があるため）
 
                     // テリトリー処理（フル同期 or 差分）
-                    if (data.tf) {
-                        // フル同期
+                    if (data.tb) {
+                        // v8: Territory Binary Delta
+                        try {
+                            const buf = data.tb; // Uint8Array
+                            if (buf.byteLength >= 4) { // Ensure minimal header
+                                const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+                                let offset = 0;
+
+                                // Add
+                                const addCount = view.getUint16(offset, true); offset += 2;
+                                const adds = [];
+                                for (let i = 0; i < addCount; i++) {
+                                    const x = view.getUint16(offset, true); offset += 2;
+                                    const y = view.getUint16(offset, true); offset += 2;
+                                    const w = view.getUint16(offset, true); offset += 2;
+                                    const h = view.getUint16(offset, true); offset += 2;
+                                    const sid = view.getUint16(offset, true); offset += 2;
+
+                                    const r = view.getUint8(offset); offset += 1;
+                                    const g = view.getUint8(offset); offset += 1;
+                                    const b = view.getUint8(offset); offset += 1;
+
+                                    // RGB -> Hex
+                                    const toHex = (c) => c.toString(16).padStart(2, '0');
+                                    const color = `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+
+                                    // Short IDからOwnerIDを取得
+                                    const ownerId = shortIdMap[sid];
+
+                                    adds.push({ x, y, w, h, color, ownerId });
+                                }
+
+                                // Remove
+                                const remCount = view.getUint16(offset, true); offset += 2;
+                                const rems = [];
+                                for (let i = 0; i < remCount; i++) {
+                                    const x = view.getUint16(offset, true); offset += 2;
+                                    const y = view.getUint16(offset, true); offset += 2;
+                                    rems.push({ x, y });
+                                }
+
+                                applyTerritoryDelta({ a: adds, r: rems });
+                                if (data.tv) territoryVersion = data.tv;
+                            }
+                        } catch (e) {
+                            console.error('Territory Binary Decode Error:', e);
+                        }
+                    } else if (data.tfb) {
+                        // 圧縮されたフル同期データ (Base64 -> Gzip -> JSON)
+                        try {
+                            const binaryStr = atob(data.tfb);
+                            const compressed = new Uint8Array(binaryStr.length);
+                            for (let i = 0; i < binaryStr.length; i++) {
+                                compressed[i] = binaryStr.charCodeAt(i);
+                            }
+                            // pakoで解凍
+                            const decompressed = pako.inflate(compressed, { to: 'string' });
+                            const raw = JSON.parse(decompressed);
+                            territories = raw.map(normalizeTerritory);
+                            rebuildTerritoryMap();
+                            territoryVersion = data.tv || territoryVersion;
+                        } catch (e) {
+                            console.error("Territory Decompression Error:", e);
+                        }
+                    } else if (data.tf) {
+                        // フル同期 (非圧縮フォールバック)
                         territories = data.tf.map(normalizeTerritory);
                         rebuildTerritoryMap();
                         territoryVersion = data.tv || territoryVersion;
                     } else if (data.td && data.tv > territoryVersion) {
-                        // 差分適用
+                        // 差分適用 (旧形式)
                         applyTerritoryDelta(data.td);
                         territoryVersion = data.tv;
                     }
@@ -898,6 +1003,8 @@
                     updateModeDisplay(data.mode);
                     players.forEach(p => { p.trail = []; p.gridTrail = []; });
                 } else if (data.type === 'round_end') {
+                    minimapBitmapData = null;
+                    minimapPlayerPositions = [];
                     showResultScreen(data.rankings, data.winner, data.teamRankings, data.nextMode, data.allTeams, data.totalPlayers);
                 } else if (data.type === 'chat') {
                     spawnNicoComment(data.text, data.color, data.name);
