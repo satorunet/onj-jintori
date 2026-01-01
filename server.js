@@ -1624,11 +1624,11 @@ setInterval(() => {
     let minimapData = null;
     let scoreboardData = null;
     if (frameCount % 33 === 0) { // 150ms * 33 = 4950ms (約5秒)
-        // テリトリービットマップ生成
-        const territoryBitmap = generateMinimapBitmap();
+        // テリトリービットマップ生成は廃止 (クライアント側の描画に任せる)
+        // const territoryBitmap = generateMinimapBitmap();
 
         // プレイヤー位置（軽量: id, x, y, color のみ）
-        const playerPositions = Object.values(players).map(p => ({
+        const playerPositions = Object.values(players).filter(p => p.state === 'active').map(p => ({
             i: p.id,
             x: Math.round(p.x),
             y: Math.round(p.y),
@@ -1636,7 +1636,7 @@ setInterval(() => {
         }));
 
         minimapData = {
-            tb: territoryBitmap,  // territory bitmap { bm, cp, sz }
+            // tb: territoryBitmap, // Removed
             pl: playerPositions   // player list
         };
 
@@ -1652,6 +1652,7 @@ setInterval(() => {
     const baseStateMsg = {
         type: 's',
         tm: timeRemaining,
+        pc: Object.keys(players).length // 全プレイヤー数
         // te: getTeamStats() // 毎回は送らない
     };
 
