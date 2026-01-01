@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>CPU Bot - Sato Support</title>
+    <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1a1a2e;
+            color: #0f0;
+            padding: 20px;
+        }
+
+        .bot {
+            display: inline-block;
+            margin: 5px;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 5px;
+            min-width: 150px;
+        }
+
+        .bot.connected {
+            border: 2px solid #0f0;
+        }
+
+        .bot.disconnected {
+            border: 2px solid #f00;
+            opacity: 0.5;
+        }
+
+        h1 {
+            color: #e94560;
+        }
+
+        #stats {
+            margin-top: 20px;
+            padding: 10px;
+            background: #0f3460;
+            border-radius: 5px;
+        }
+
+        #targetInfo {
+            margin-top: 10px;
+            padding: 10px;
+            background: #1a1a2e;
+            border: 1px solid #e94560;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🤖 CPU Bot - Sato Support Mode</h1>
+    <p>ターゲット: <strong>sato</strong> を追跡して領土作成を補佐</p>
+    <div id="targetInfo">ターゲット検索中...</div>
+    <div id="bots"></div>
+    <div id="stats">
+        <div>接続数: <span id="connected">0</span> / 10</div>
+        <div>受信メッセージ数: <span id="msgCount">0</span></div>
+    </div>
+
+    <script>
+        const SERVER_URL = 'wss://new-node02.open2ch.net:2053';
+        const BOT_COUNT = 30;
+        const TEAM_NAME = 'dev';
+        const TARGET_NAME = 'sato';
+
+        let bots = [];
+        let totalMsgs = 0;
+        let targetPlayer = null; // satoの情報
+
+        function createBot(index) {
+            const name = `CPU${index + 1}`;
+            const botDiv = document.createElement('div');
+            botDiv.className = 'bot disconnected';
+            botDiv.id = `bot-${index}`;
+            botDiv.innerHTML = `<div><strong>${name}</strong></div><div class="status">接続中...</div><div class="action">-</div>`;
+            document.getElementById('bots').appendChild(botDiv);
+
+            const bot = {
+                name: name,
+                index: index,
+                socket: null,
+                connected: false,
+                myId: null,
+                myX: 0,
+                myY: 0,
+                dx: 0,
+                dy: 0,
+                lastUpdate: 0,
+                offsetAngle: (index / BOT_COUNT) * Math.PI * 2 // 各ボットが異なる角度でサポート
+            };
+
+            try {
+                bot.socket = new WebSocket(SERVER_URL);
+                bot.socket.binaryType = 'arraybuffer';
+
+                bot.socket.onopen = () => {
+                    bot.connected = true;
+                    botDiv.className = 'bot connected';
+                    botDiv.querySelector('.status').textContent = '接続完了';
+                    updateStats();
+
+                    // Join with name and team
+                    bot.socket.send(JSON.stringify({
+                        type: 'join',
+                        name: name,
+                        team: TEAM_NAME
+                    }));
+                };
+
+                bot.socket.onmessage = (e) => {
+                    totalMsgs++;
+                    if (totalMsgs % 100 === 0) updateStats();
+
+                    let data;
+                    if (e.data instanceof ArrayBuffer) {
+                        try {
+                            data = msgpack.decode(new Uint8Array(e.data));
+                        } catch (err) { return; }
+                    } else {
+                        data = JSON.parse(e.data);
+                    }
+
+                    if (data.type === 'init') {
+                        bot.myId = data.id;
+                    }
+
+                    if (data.type === 's' || data.type === 'state') {
+                        const players = data.p || data.players || [];
+
+                        // 自分の位置を更新
+                        const me = players.find(p => (p.i || p.id) === bot.myId);
+                        if (me) {
+                            bot.myX = me.x;
+                            bot.myY = me.y;
+                        }
+
+                        // ターゲット(sato)を探す
+                        const target = players.find(p => {
+                            const pName = (p.n || p.name || '').toLowerCase();
+                            return pName.includes(TARGET_NAME.toLowerCase());
+                        });
+
+                        if (target) {
+                            targetPlayer = {
+                                x: target.x,
+                                y: target.y,
+                                name: target.n || target.name,
+                                color: target.c || target.color
+                            };
+                            document.getElementById('targetInfo').innerHTML =
+                                `🎯 ターゲット発見: <strong>${targetPlayer.name}</strong> ` +
+                                `位置: (${Math.round(targetPlayer.x)}, ${Math.round(targetPlayer.y)})`;
+                        }
+
+                        botDiv.querySelector('.status').textContent =
+                            targetPlayer ? `追跡中: ${targetPlayer.name}` : 'ターゲット検索中';
+                    }
+                };
+
+                bot.socket.onclose = () => {
+                    bot.connected = false;
+                    botDiv.className = 'bot disconnected';
+                    botDiv.querySelector('.status').textContent = '切断';
+                    updateStats();
+                };
+
+                bot.socket.onerror = (err) => {
+                    botDiv.querySelector('.status').textContent = 'エラー';
+                };
+
+            } catch (err) {
+                botDiv.querySelector('.status').textContent = 'エラー: ' + err.message;
+            }
+
+            bots.push(bot);
+            return bot;
+        }
+
+        function updateStats() {
+            const connected = bots.filter(b => b.connected).length;
+            document.getElementById('connected').textContent = connected;
+            document.getElementById('msgCount').textContent = totalMsgs;
+        }
+
+        // Support movement logic
+        function supportMovement() {
+            bots.forEach((bot, index) => {
+                if (!bot.connected || !bot.socket || bot.socket.readyState !== WebSocket.OPEN) return;
+
+                const botDiv = document.getElementById(`bot-${index}`);
+                let action = 'idle';
+                let drawing = false;
+
+                if (targetPlayer) {
+                    // ターゲットに向かって移動（ただし、少しオフセットをつけて周囲を囲む）
+                    const offsetDist = 100 + Math.sin(Date.now() / 1000 + bot.offsetAngle) * 50; // 100-150px離れた位置
+                    const targetX = targetPlayer.x + Math.cos(bot.offsetAngle) * offsetDist;
+                    const targetY = targetPlayer.y + Math.sin(bot.offsetAngle) * offsetDist;
+
+                    const dx = targetX - bot.myX;
+                    const dy = targetY - bot.myY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist > 30) {
+                        // ターゲット位置に向かう
+                        bot.dx = dx / dist;
+                        bot.dy = dy / dist;
+                        action = `→ ${Math.round(dist)}px`;
+
+                        // ターゲットの近くにいるときは領土を描画
+                        if (dist < 300) {
+                            drawing = true;
+                            action = `🖊️ ${Math.round(dist)}px`;
+                        }
+                    } else {
+                        // 十分近い場合は、ターゲットと同じ方向に動く（補佐）
+                        // 小さなランダム移動
+                        const angle = Date.now() / 500 + bot.offsetAngle;
+                        bot.dx = Math.cos(angle) * 0.5;
+                        bot.dy = Math.sin(angle) * 0.5;
+                        drawing = true;
+                        action = '🖊️ 補佐中';
+                    }
+
+                    // オフセット角度を少しずつ回転させる（周囲を回る動き）
+                    bot.offsetAngle += 0.01;
+                } else {
+                    // ターゲットがいない場合はランダム歩行
+                    if (Date.now() - bot.lastUpdate > 2000) {
+                        const angle = Math.random() * Math.PI * 2;
+                        bot.dx = Math.cos(angle);
+                        bot.dy = Math.sin(angle);
+                        bot.lastUpdate = Date.now();
+                    }
+                    action = '🔍 検索中';
+                }
+
+                botDiv.querySelector('.action').textContent = action;
+
+                // Send input
+                bot.socket.send(JSON.stringify({
+                    type: 'input',
+                    dx: bot.dx,
+                    dy: bot.dy,
+                    drawing: drawing
+                }));
+            });
+        }
+
+        // Initialize bots
+        for (let i = 0; i < BOT_COUNT; i++) {
+            setTimeout(() => createBot(i), i * 200);
+        }
+
+        // Start support movement loop
+        setInterval(supportMovement, 100);
+    </script>
+</body>
+
+</html>

@@ -3,18 +3,25 @@ const https = require('https');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const zlib = require('zlib');  // 圧縮率計算用
+const os = require('os'); // 追加
 const msgpack = require('./msgpack.js');
 
 // Debug Mode: node server.js debug または MODE=debug node server.js
+const INNER_DEBUG_MODE = process.argv.includes('inner_debug');
 const DEBUG_MODE = process.argv.includes('debug') ||
     process.argv.includes('--debug') ||
     process.argv.includes('mode=debug') ||
-    process.env.MODE === 'debug';
+    process.env.MODE === 'debug' ||
+    INNER_DEBUG_MODE;
+
+const FORCE_TEAM = process.argv.includes('stage=team');
+const INFINITE_TIME = process.argv.includes('mugen');
+const STATS_MODE = process.argv.includes('toukei');
 
 // Configuration
 //const PORT = 2087;
 const PORT = 2053;
-const GAME_DURATION = 120; // seconds
+const GAME_DURATION = (DEBUG_MODE || INFINITE_TIME) ? 999999 : 120; // seconds
 const RESPAWN_TIME = 3; // seconds
 let WORLD_WIDTH = 3000;
 let WORLD_HEIGHT = 3000;
@@ -28,7 +35,7 @@ const SSL_CERT_PATH = '/var/www/sites/nodejs/ssl/node.open2ch.net/cert.pem';
 
 const EMOJIS = ['😀', '😎', '😂', '😍', '🤔', '🤠', '😈', '👻', '👽', '🤖', '💩', '🐱', '🐶', '🦊', '🦁', '🐷', '🦄', '🐲'];
 const GAME_MODES = ['SOLO', 'TEAM'];
-let currentModeIdx = 0; // 0: Solo, 1: Team
+let currentModeIdx = FORCE_TEAM ? 1 : 0; // 0: Solo, 1: Team
 
 // Server Setup
 let server;
@@ -99,7 +106,14 @@ let bandwidthStats = {
     // 圧縮率サンプリング
     lastSampleOriginal: 0,   // 最後のサンプル元サイズ
     lastSampleCompressed: 0, // 最後のサンプル圧縮後サイズ
-    periodStart: Date.now()
+    periodStart: Date.now(),
+    // CPU Stats
+    lastTickTime: Date.now(),
+    cpuUserStart: process.cpuUsage().user,
+    cpuSystemStart: process.cpuUsage().system,
+    lagSum: 0,
+    lagMax: 0,
+    ticks: 0
 };
 
 let obstacles = [];
@@ -143,6 +157,32 @@ function initGrid() {
             }
         }
     }
+
+    // DEBUG: Fill World
+    /*
+    if (INNER_DEBUG_MODE) {
+        players['DEBUG_FULL_OWNER'] = {
+            id: 'DEBUG_FULL_OWNER',
+            color: '#333333',
+            name: 'WORLD',
+            state: 'active',
+            team: 'CPU',
+            x: -1, y: -1,
+            gridTrail: [],
+            trail: [],
+            score: 0,
+            kills: 0
+        };
+        for (let y = 0; y < GRID_ROWS; y++) {
+            for (let x = 0; x < GRID_COLS; x++) {
+                if (worldGrid[y][x] !== 'obstacle') {
+                    worldGrid[y][x] = 'DEBUG_FULL_OWNER';
+                }
+            }
+        }
+    }
+    */
+
     rebuildTerritoryRects(); // Initial empty
 }
 initGrid();
@@ -264,7 +304,7 @@ function rebuildTerritoryRects() {
         newMap.set(key, r);
     });
 
-    // 追加されたもの
+    // 追加されたもの（新規 or オーナー/幅が変わったもの）
     const added = [];
     newRects.forEach(r => {
         const key = `${r.x},${r.y}`;
@@ -274,11 +314,17 @@ function rebuildTerritoryRects() {
         }
     });
 
-    // 削除されたもの
+    // 削除されたもの（完全に消えた or オーナー/幅が変わったもの）
     const removed = [];
     territoryRects.forEach(r => {
         const key = `${r.x},${r.y}`;
-        if (!newMap.has(key)) {
+        const newRect = newMap.get(key);
+        // 完全に消えた場合
+        if (!newRect) {
+            removed.push({ x: r.x, y: r.y });
+        }
+        // オーナーや幅が変わった場合も「古い方を削除」として通知
+        else if (newRect.o !== r.o || newRect.w !== r.w) {
             removed.push({ x: r.x, y: r.y });
         }
     });
@@ -374,6 +420,109 @@ function attemptCapture(playerId) {
     // Pass 2: Scan with trail (Identify new enclosed areas)
     const visitedCur = scan(true);
 
+    // トレイルで直接通ったセルを記録
+    const trailCells = new Set();
+    // トレイルで通過した敵陣地のセルを記録（座標とオーナー）
+    const enemyTrailCells = [];
+
+    p.gridTrail.forEach(pt => {
+        if (pt.x >= 0 && pt.x < GRID_COLS && pt.y >= 0 && pt.y < GRID_ROWS) {
+            trailCells.add(pt.y * GRID_COLS + pt.x);
+            // この位置の所有者が敵なら記録
+            const owner = worldGrid[pt.y][pt.x];
+            if (owner && owner !== playerId && owner !== 'obstacle') {
+                // チームメイトは除外
+                if (p.team) {
+                    const ownerPlayer = players[owner];
+                    if (ownerPlayer && ownerPlayer.team === p.team) return;
+                }
+                enemyTrailCells.push({ x: pt.x, y: pt.y, owner });
+            }
+        }
+    });
+
+    // 敵陣地のキャプチャ可能ゾーンを計算
+    // トレイルで分断された各領域（連結成分）を特定し、最大の領域以外（囲った部分）をキャプチャする
+    const enemyCaptureZone = new Set();
+    const processedEnemyCells = new Set();
+    const islands = []; // [{ size: number, cells: Set<idx>, owner: id }]
+
+    enemyTrailCells.forEach(startCell => {
+        // startCell自体はトレイル上の点なので、その隣接点から探索を開始する
+        const neighbors = [
+            { x: startCell.x - 1, y: startCell.y },
+            { x: startCell.x + 1, y: startCell.y },
+            { x: startCell.x, y: startCell.y - 1 },
+            { x: startCell.x, y: startCell.y + 1 }
+        ];
+
+        neighbors.forEach(nb => {
+            if (nb.x < 0 || nb.x >= GRID_COLS || nb.y < 0 || nb.y >= GRID_ROWS) return;
+            const nbIdx = nb.y * GRID_COLS + nb.x;
+
+            const cellOwner = worldGrid[nb.y] && worldGrid[nb.y][nb.x];
+            // まだ処理していない、かつ「現在の内側」で「同じ敵の陣地」かつ「トレイル上ではない」なら探索開始
+            if (!processedEnemyCells.has(nbIdx) && visitedCur[nbIdx] === 0 && cellOwner === startCell.owner && !trailCells.has(nbIdx)) {
+
+                // 新しい連結成分（Island）の探索
+                const islandCells = new Set();
+                const queue = [nb];
+                processedEnemyCells.add(nbIdx);
+                islandCells.add(nbIdx);
+
+                while (queue.length > 0) {
+                    const { x, y } = queue.shift();
+
+                    const nextNeighbors = [
+                        { x: x - 1, y: y }, { x: x + 1, y: y },
+                        { x: x, y: y - 1 }, { x: x, y: y + 1 }
+                    ];
+
+                    nextNeighbors.forEach(n => {
+                        if (n.x >= 0 && n.x < GRID_COLS && n.y >= 0 && n.y < GRID_ROWS) {
+                            const nIdx = n.y * GRID_COLS + n.x;
+                            if (!processedEnemyCells.has(nIdx)) {
+                                const nOwner = worldGrid[n.y][n.x];
+                                if (visitedCur[nIdx] === 0 && nOwner === startCell.owner && !trailCells.has(nIdx)) {
+                                    processedEnemyCells.add(nIdx);
+                                    islandCells.add(nIdx);
+                                    queue.push(n);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (islandCells.size > 0) {
+                    islands.push({
+                        owner: startCell.owner,
+                        cells: islandCells,
+                        size: islandCells.size
+                    });
+                }
+            }
+        });
+    });
+
+    // 各敵IDごとに、最大のIslandを残し、それ以外をキャプチャ対象にする
+    const islandsByOwner = {};
+    islands.forEach(island => {
+        if (!islandsByOwner[island.owner]) islandsByOwner[island.owner] = [];
+        islandsByOwner[island.owner].push(island);
+    });
+
+    Object.values(islandsByOwner).forEach(ownerIslands => {
+        if (ownerIslands.length > 1) {
+            // サイズで降順ソート
+            ownerIslands.sort((a, b) => b.size - a.size);
+            // 最大のもの（index 0）を除外、それ以外（index 1以降）をキャプチャ対象に追加
+            for (let i = 1; i < ownerIslands.length; i++) {
+                ownerIslands[i].cells.forEach(idx => enemyCaptureZone.add(idx));
+            }
+        }
+        // 分断されていない（length=1）場合はキャプチャしない
+    });
+
     // Capture Step
     let capturedCount = 0;
     let kills = [];
@@ -381,13 +530,18 @@ function attemptCapture(playerId) {
     for (let y = 0; y < GRID_ROWS; y++) {
         for (let x = 0; x < GRID_COLS; x++) {
             const idx = y * GRID_COLS + x;
+            const oldOwner = worldGrid[y][x];
 
             // Capture Condition:
             // 1. Must be Inside now (visitedCur == 0)
             // 2. Must be Outside before (visitedPre == 1) -> This excludes existing holes
             // 3. Not an obstacle
-            if (visitedCur[idx] === 0 && visitedPre[idx] === 1 && worldGrid[y][x] !== 'obstacle') {
-                const oldOwner = worldGrid[y][x];
+            const isNewlyEnclosed = (visitedCur[idx] === 0 && visitedPre[idx] === 1);
+
+            // トレイルから連続している敵陣地のキャプチャ可能ゾーン（分断された小さい方）
+            const isEnemyCapturable = enemyCaptureZone.has(idx);
+
+            if ((isNewlyEnclosed || isEnemyCapturable) && oldOwner !== 'obstacle') {
 
                 let isTeammate = false;
                 if (p.team && oldOwner) {
@@ -419,10 +573,16 @@ function attemptCapture(playerId) {
     if (capturedCount > 0) {
         p.score += capturedCount;
         rebuildTerritoryRects();
-        kills.forEach(kid => {
-            killPlayer(kid, "囲まれた");
-            p.kills = (p.kills || 0) + 1;
-        });
+
+        // 囲まれたプレイヤーを処理
+        if (kills.length > 0) {
+            kills.forEach(kid => {
+                killPlayer(kid, "囲まれた");
+                p.kills = (p.kills || 0) + 1;
+            });
+            // killPlayerで陣地がワイプされるので、再度rebuildが必要
+            rebuildTerritoryRects();
+        }
     }
 
     p.gridTrail = []; // Clear trail
@@ -447,6 +607,8 @@ setInterval(() => {
 
     Object.values(players).forEach(p => {
         if (p.state !== 'active') return;
+        // Skip Debug Dummies
+        if (p.id === 'DEBUG_FULL_OWNER' || p.id === 'DEBUG_ENEMY') return;
 
         // Auto-run if AFK at spawn for 5 seconds
         if (!p.hasMovedSinceSpawn && !p.autoRun && p.spawnTime && (now - p.spawnTime > 5000)) {
@@ -492,6 +654,11 @@ setInterval(() => {
         if (!isInvuln) {
             Object.values(players).forEach(target => {
                 if (target.id === p.id || target.state !== 'active' || (p.team && target.team === p.team)) return;
+
+                // ターゲットが無敵なら相互作用しない（フェアな仕様）
+                const targetInvuln = (target.invulnerableUntil && now < target.invulnerableUntil);
+                if (targetInvuln) return;
+
                 const tgx = toGrid(target.x);
                 const tgy = toGrid(target.y);
 
@@ -505,7 +672,7 @@ setInterval(() => {
                             return; // Target survives
                         } else if (target.score < p.score) {
                             p.kills = (p.kills || 0) + 1;
-                            killPlayer(target.id, "正面衝突(敗北)", true);
+                            killPlayer(target.id, "正面衝突(敗北)");
                             return;
                         } else {
                             killPlayer(p.id, "正面衝突");
@@ -597,15 +764,22 @@ setInterval(() => {
                 if (hitSelf) {
                     killPlayer(p.id, "自爆");
                 } else {
-                    // Interpolate Grid Points to prevent gaps
+                    // Interpolate Grid Points to prevent gaps (4-connected)
                     const dx = gx - lastT.x;
                     const dy = gy - lastT.y;
                     const steps = Math.max(Math.abs(dx), Math.abs(dy));
                     for (let i = 1; i <= steps; i++) {
                         const igx = Math.round(lastT.x + dx * i / steps);
                         const igy = Math.round(lastT.y + dy * i / steps);
-                        const prev = p.gridTrail[p.gridTrail.length - 1];
-                        // Avoid duplicates logic
+
+                        let prev = p.gridTrail[p.gridTrail.length - 1];
+
+                        // Prevent diagonal jumps by inserting corner
+                        if (prev.x !== igx && prev.y !== igy) {
+                            p.gridTrail.push({ x: igx, y: prev.y });
+                            prev = p.gridTrail[p.gridTrail.length - 1]; // Update prev
+                        }
+
                         if (prev.x === igx && prev.y === igy) continue;
                         p.gridTrail.push({ x: igx, y: igy });
                     }
@@ -689,6 +863,67 @@ function respawnPlayer(p, fullReset = false) {
         }
     }
     rebuildTerritoryRects();
+
+    // DEBUG: Create Enemy Territory INSIDE my territory
+    if (INNER_DEBUG_MODE && p.id !== 'DEBUG_FULL_OWNER' && p.id !== 'DEBUG_ENEMY') {
+        setTimeout(() => {
+            if (p.state !== 'active') return;
+            const px = toGrid(p.x);
+            const py = toGrid(p.y);
+
+            // 1. 自分の陣地を大きくする (30x30)
+            const mySize = 30;
+            const myOffset = -15; // プレイヤー中心
+            for (let dy = 0; dy < mySize; dy++) {
+                for (let dx = 0; dx < mySize; dx++) {
+                    const ty = py + myOffset + dy;
+                    const tx = px + myOffset + dx;
+                    if (ty >= 0 && ty < GRID_ROWS && tx >= 0 && tx < GRID_COLS) {
+                        if (worldGrid[ty][tx] !== 'obstacle') {
+                            worldGrid[ty][tx] = p.id;
+                        }
+                    }
+                }
+            }
+
+            // 2. その中に敵陣地を作る (10x10) - 少し右にずらす
+            const enemySize = 10;
+            const enemyOffsetX = 2;
+            const enemyOffsetY = -5;
+
+            // Create Enemy Player if not exists
+            if (!players['DEBUG_ENEMY']) {
+                players['DEBUG_ENEMY'] = {
+                    id: 'DEBUG_ENEMY',
+                    color: '#FF0000',
+                    name: 'ENEMY',
+                    state: 'active',
+                    team: 'CPU2',
+                    x: -1, y: -1,
+                    gridTrail: [],
+                    trail: [],
+                    score: 0,
+                    kills: 0
+                };
+            }
+
+            // Draw Enemy Territory
+            let changed = false;
+            for (let dy = 0; dy < enemySize; dy++) {
+                for (let dx = 0; dx < enemySize; dx++) {
+                    const ty = py + enemyOffsetY + dy;
+                    const tx = px + enemyOffsetX + dx;
+                    if (ty >= 0 && ty < GRID_ROWS && tx >= 0 && tx < GRID_COLS) {
+                        if (worldGrid[ty][tx] !== 'obstacle') {
+                            worldGrid[ty][tx] = 'DEBUG_ENEMY';
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if (changed) rebuildTerritoryRects();
+        }, 1000);
+    }
 }
 
 function killPlayer(id, reason, skipWipe = false) {
@@ -744,7 +979,7 @@ function endRound() {
     roundActive = false;
 
     // ラウンド終了時の転送量統計出力（デバッグモードのみ）
-    if (DEBUG_MODE) printRoundStats();
+    if (STATS_MODE) printRoundStats();
 
     // Rank logic
     const rankings = Object.values(players)
@@ -770,7 +1005,7 @@ function endRound() {
     })).sort((a, b) => b.score - a.score).slice(0, 5);
 
     // Determine Next Mode Preview
-    const nextModeIdx = (currentModeIdx + 1) % GAME_MODES.length;
+    const nextModeIdx = FORCE_TEAM ? 1 : ((currentModeIdx + 1) % GAME_MODES.length);
     const nextMode = GAME_MODES[nextModeIdx];
 
     // Calculate Team Member Counts for Selection UI
@@ -784,7 +1019,9 @@ function endRound() {
         initGrid();
         // Reset game state
         // Rotate Mode
-        currentModeIdx = (currentModeIdx + 1) % GAME_MODES.length;
+        if (!FORCE_TEAM) {
+            currentModeIdx = (currentModeIdx + 1) % GAME_MODES.length;
+        }
         const mode = GAME_MODES[currentModeIdx];
 
         territoryRects = [];
@@ -966,32 +1203,28 @@ wss.on('connection', ws => {
                 }
 
                 respawnPlayer(p, true);
-            }
-            if (data.type === 'update_team') {
+            } else if (data.type === 'update_team') {
                 let team = data.team || '';
                 team = team.replace(/[\[\]]/g, '').substr(0, 3);
                 p.requestedTeam = team;
-            }
-            if (data.type === 'input' && p.state === 'active') {
-                p.hasMovedSinceSpawn = true; // Mark as active (User Input)
-                p.autoRun = false;
-                p.afkDeaths = 0;
-
-                if (data.dx != null) {
-                    const mag = Math.sqrt(data.dx * data.dx + data.dy * data.dy);
-                    if (mag > 0) {
-                        p.dx = data.dx / mag;
-                        p.dy = data.dy / mag;
-                        // Cancel invulnerability immediately on move
-                        p.invulnerableUntil = 0;
-                    }
-                }
-                if (data.drawing != null) p.isDrawing = data.drawing;
-            }
-            if (data.type === 'chat') {
+            } else if (data.type === 'chat') {
                 const text = (data.text || '').toString().substring(0, 50);
                 if (text.trim().length > 0) {
                     broadcast({ type: 'chat', text: text, color: p.color, name: p.name });
+                }
+            } else if (Array.isArray(data) && data.length === 2 && p.state === 'active') {
+                // 移動コマンド: 配列形式 [dx, dy] で最軽量化
+                const dx = data[0];
+                const dy = data[1];
+                p.hasMovedSinceSpawn = true;
+                p.autoRun = false;
+                p.afkDeaths = 0;
+
+                const mag = Math.sqrt(dx * dx + dy * dy);
+                if (mag > 0) {
+                    p.dx = dx / mag;
+                    p.dy = dy / mag;
+                    p.invulnerableUntil = 0;
                 }
             }
         } catch (e) { }
@@ -1003,94 +1236,162 @@ wss.on('connection', ws => {
 });
 
 // Broadcast Loop - 最適化版
+let frameCount = 0;
+
 setInterval(() => {
-    if (!roundActive) return;
     const now = Date.now();
+    // ラグ計測 (予定150msに対するズレ)
+    const dt = now - bandwidthStats.lastTickTime;
+    const lag = Math.max(0, dt - 150);
+    bandwidthStats.lagSum += lag;
+    bandwidthStats.lagMax = Math.max(bandwidthStats.lagMax, lag);
+    bandwidthStats.ticks++;
+    bandwidthStats.lastTickTime = now;
 
-    // プレイヤーデータを短縮キーで送信
-    const cleanPlayers = Object.values(players).map(p => {
-        // trail を簡略化（座標を整数で、短縮形式）
+    if (!roundActive) return;
+    frameCount++;
+
+    // 1. 全プレイヤーデータの準備（ソース）
+    const allPlayersData = Object.values(players).map(p => {
         const trail = p.gridTrail.length > 0
-            ? p.gridTrail.map(pt => [pt.x * GRID_SIZE + 5, pt.y * GRID_SIZE + 5]) // [x,y] 配列形式
+            ? p.gridTrail.map(pt => [pt.x * GRID_SIZE + 5, pt.y * GRID_SIZE + 5])
             : [];
-
         return {
-            i: p.id,           // id
+            i: p.id,
             x: Math.round(p.x),
             y: Math.round(p.y),
-            c: p.color,        // color
-            n: p.name,         // name
-            e: p.emoji,        // emoji
-            t: p.team,         // team
-            r: trail,          // trail (短縮形式)
-            s: p.score,        // score
-            st: p.state === 'active' ? 1 : (p.state === 'dead' ? 0 : 2), // state (数値化)
+            c: p.color,
+            n: p.name,
+            e: p.emoji,
+            t: p.team,
+            r: trail,
+            s: p.score,
+            st: p.state === 'active' ? 1 : (p.state === 'dead' ? 0 : 2),
             iv: (p.invulnerableUntil && now < p.invulnerableUntil) ? Math.ceil((p.invulnerableUntil - now) / 1000) : 0
         };
     });
 
-    const stateMsg = {
-        type: 's',             // 'state' を短縮
-        p: cleanPlayers,       // players
-        tm: timeRemaining,     // time
-        te: getTeamStats()     // teams
+    // 2. ミニマップ用データ（3秒に1回生成）
+    // 軽量化のため、ID, x, y, color のみ
+    let minimapData = null;
+    if (frameCount % 20 === 0) { // 150ms * 20 = 3000ms (3秒)
+        minimapData = allPlayersData.map(p => ({
+            i: p.i,
+            x: p.x,
+            y: p.y,
+            c: p.c
+        }));
+    }
+
+    // 3. 共通ステート（領土情報など）
+    const baseStateMsg = {
+        type: 's',
+        tm: timeRemaining,
+        te: getTeamStats()
     };
 
-    // テリトリー差分送信
+
+    // テリトリー差分（複数のrebuildがあった場合はマージして送信）
     if (territoriesChanged) {
-        // 最新の差分を取得
         if (pendingTerritoryUpdates.length > 0) {
-            const latestUpdate = pendingTerritoryUpdates[pendingTerritoryUpdates.length - 1];
-            stateMsg.td = latestUpdate;  // territory delta
-            stateMsg.tv = territoryVersion;  // territory version
+            // すべての差分をマージ
+            const mergedAdded = [];
+            const mergedRemoved = [];
+            const addedKeys = new Set();
+            const removedKeys = new Set();
+
+            pendingTerritoryUpdates.forEach(update => {
+                // 追加をマージ（同じ座標は上書き）
+                if (update.a) {
+                    update.a.forEach(a => {
+                        const key = `${a.x},${a.y}`;
+                        if (!addedKeys.has(key)) {
+                            addedKeys.add(key);
+                            mergedAdded.push(a);
+                        }
+                    });
+                }
+                // 削除をマージ（重複を避ける）
+                if (update.r) {
+                    update.r.forEach(r => {
+                        const key = `${r.x},${r.y}`;
+                        if (!removedKeys.has(key)) {
+                            removedKeys.add(key);
+                            mergedRemoved.push(r);
+                        }
+                    });
+                }
+            });
+
+            baseStateMsg.td = {
+                v: territoryVersion,
+                a: mergedAdded,
+                r: mergedRemoved
+            };
+            baseStateMsg.tv = territoryVersion;
+
+            // 送信後にクリア
+            pendingTerritoryUpdates = [];
         }
         territoriesChanged = false;
     }
 
-    // クライアントごとに送信（必要に応じてフル同期）
+    // 4. クライアントごとに個別送信 (AOI計算)
     wss.clients.forEach(c => {
         if (c.readyState !== WebSocket.OPEN) return;
 
-        const playerId = c.playerId;
-        const lastVersion = lastFullSyncVersion[playerId] || 0;
+        const myPlayer = players[c.playerId];
+        const myX = myPlayer ? myPlayer.x : world.width / 2;
+        const myY = myPlayer ? myPlayer.y : world.height / 2;
 
-        let payload;
-        let isFullSync = false;
-        // クライアントが古すぎる場合、または初回はフル同期（しきい値10に緩和）
-        if (territoryVersion - lastVersion > 10 || lastVersion === 0) {
-            const fullMsg = { ...stateMsg, tf: territoryRects, tv: territoryVersion };
-            delete fullMsg.td;  // 差分は不要
-            payload = msgpack.encode(fullMsg);
-            lastFullSyncVersion[playerId] = territoryVersion;
-            isFullSync = true;
+        // AOIフィルタリング (視界範囲: 画面幅の少し外側まで)
+        // 画面幅が最大2000程度と仮定し、2500px以内を送信
+        const VISIBLE_DIST_SQ = 2500 * 2500;
+
+        const visiblePlayers = allPlayersData.filter(p => {
+            // 自分自身は常に含める
+            if (p.i === c.playerId) return true;
+            // 距離計算
+            const distSq = (p.x - myX) ** 2 + (p.y - myY) ** 2;
+            return distSq < VISIBLE_DIST_SQ;
+        });
+
+        // メッセージ構築
+        // spread構文(...)を使うと遅いので、Object.assignか直接代入推奨だが、可読性重視で構築
+        const msg = {
+            ...baseStateMsg,
+            p: visiblePlayers
+        };
+
+        // ミニマップデータを添付（該当時のみ）
+        if (minimapData) {
+            msg.mm = minimapData;
+        }
+
+        // フル同期チェック
+        const lastVersion = lastFullSyncVersion[c.playerId] || 0;
+        if (territoryVersion - lastVersion > 50 || lastVersion === 0) { // しきい値を10->50に緩和
+            msg.tf = territoryRects;
+            msg.tv = territoryVersion;
+            delete msg.td; // 差分削除
+            lastFullSyncVersion[c.playerId] = territoryVersion;
             bandwidthStats.periodFullSyncs++;
         } else {
-            payload = msgpack.encode(stateMsg);
             bandwidthStats.periodDeltaSyncs++;
         }
 
+        // 個別エンコード（AOIのため必須）
+        const payload = msgpack.encode(msg);
         c.send(payload);
 
-        // 転送量記録
+        // 統計更新
         const byteLen = payload.length;
         bandwidthStats.totalBytesSent += byteLen;
         bandwidthStats.periodBytesSent += byteLen;
         bandwidthStats.msgsSent++;
         bandwidthStats.periodMsgsSent++;
-
-        // 圧縮率サンプリング（10回に1回、フル同期時のみ）
-        if (isFullSync && bandwidthStats.periodFullSyncs % 10 === 1) {
-            try {
-                const compressed = zlib.deflateSync(payload);
-                bandwidthStats.lastSampleOriginal = byteLen;
-                bandwidthStats.lastSampleCompressed = compressed.length;
-            } catch (e) { /* ignore */ }
-        }
     });
 }, 150);  // 100ms → 150ms に変更（秒間約6.7回、さらに33%削減）
-
-initGrid();
-server.listen(PORT, () => console.log("Server Grid Mode Started " + PORT));
 
 function getDistSq(px, py, vx, vy, wx, wy) {
     const l2 = (vx - wx) ** 2 + (vy - wy) ** 2;
@@ -1135,6 +1436,7 @@ function resetRoundStats() {
 }
 
 // ラウンド終了時の統計出力
+// ラウンド終了時の統計出力
 function printRoundStats() {
     const now = Date.now();
     const roundDuration = (now - bandwidthStats.periodStart) / 1000;
@@ -1142,6 +1444,37 @@ function printRoundStats() {
     const activePlayerCount = Object.values(players).filter(p => p.state === 'active').length;
     const uptimeSec = (now - serverStartTime) / 1000;
     const mode = bandwidthStats.roundMode || GAME_MODES[currentModeIdx];
+
+    // CPU Usage Calculation
+    let cpuPercent = 0;
+    if (process.cpuUsage && bandwidthStats.cpuUserStart !== undefined) {
+        const cpuUsage = process.cpuUsage();
+        const userDiff = cpuUsage.user - bandwidthStats.cpuUserStart;
+        const sysDiff = cpuUsage.system - bandwidthStats.cpuSystemStart;
+        const totalCpuTime = (userDiff + sysDiff) / 1000000;
+        cpuPercent = (totalCpuTime / roundDuration) * 100;
+
+        // Reset for next round
+        bandwidthStats.cpuUserStart = cpuUsage.user;
+        bandwidthStats.cpuSystemStart = cpuUsage.system;
+    }
+
+    // Load Average
+    let loadAvgStr = "N/A";
+    try {
+        const os = require('os');
+        const la = os.loadavg();
+        loadAvgStr = la[0].toFixed(2);
+    } catch (e) { }
+
+    // Event Loop Lag
+    const avgLag = bandwidthStats.ticks > 0 ? (bandwidthStats.lagSum / bandwidthStats.ticks).toFixed(1) : 0;
+    const maxLag = bandwidthStats.lagMax || 0;
+
+    // Reset Lag stats for next round
+    bandwidthStats.lagSum = 0;
+    bandwidthStats.lagMax = 0;
+    bandwidthStats.ticks = 0;
 
     // 転送レート計算
     const sendRate = roundDuration > 0 ? bandwidthStats.periodBytesSent / roundDuration : 0;
@@ -1155,42 +1488,84 @@ function printRoundStats() {
     const avgMsgSize = bandwidthStats.periodMsgsSent > 0
         ? bandwidthStats.periodBytesSent / bandwidthStats.periodMsgsSent
         : 0;
+
     // 圧縮率計算
     let compressionInfo = '計測なし';
+    let estimatedCompressed = 0;
     if (bandwidthStats.lastSampleOriginal > 0 && bandwidthStats.lastSampleCompressed > 0) {
         const ratio = (1 - bandwidthStats.lastSampleCompressed / bandwidthStats.lastSampleOriginal) * 100;
-        const estimatedCompressed = bandwidthStats.periodBytesSent * (bandwidthStats.lastSampleCompressed / bandwidthStats.lastSampleOriginal);
-        compressionInfo = `${ratio.toFixed(1)}%削減 (推定実転送: ${formatBytes(estimatedCompressed)})`;
+        // 推定実転送: 元サイズではなく、圧縮後の推定
+        estimatedCompressed = bandwidthStats.periodBytesSent;
+
+        // もし圧縮してなかったら？（逆算）
+        const originalEstimated = bandwidthStats.periodBytesSent / (bandwidthStats.lastSampleCompressed / bandwidthStats.lastSampleOriginal);
+        compressionInfo = `${ratio.toFixed(1)}%削減 (推定実転送: ${formatBytes(bandwidthStats.periodBytesSent)})`;
     }
 
-    // 1日/1月の予測（現在のレートが継続すると仮定）
+    // 1日/1月の予測
     const dailySend = sendRate * 60 * 60 * 24;
     const monthlySend = dailySend * 30;
 
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════════════════════╗');
-    console.log('║                📊 ラウンド終了 - 転送量統計レポート                           ║');
+    console.log('║                📊 ラウンド終了 - 転送量＆負荷統計レポート                     ║');
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log('║ ⚡ 実装中の負荷対策: [MsgPack Binary] [Delta Sync] [Gzip Comp] [Grid Merge]   ║');
+    console.log('║ ⚡ 実装中の負荷対策: [MsgPack] [AOI(Distance)] [Minimap Interleave]           ║');
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log(`║ 🕐 サーバー稼働: ${formatTime(uptimeSec).padEnd(15)} | ラウンド時間: ${formatTime(roundDuration)}`);
+    console.log(`║ 🕐 稼働: ${formatTime(uptimeSec).padEnd(15)} | ラウンド: ${formatTime(roundDuration)}`);
+    console.log(`║ 💻 CPU使用率: ${cpuPercent.toFixed(1)}% | LA(1m): ${loadAvgStr} | 平均ラグ: ${avgLag}ms (Max: ${maxLag}ms)`);
     console.log(`║ 🎮 モード: ${mode.padEnd(10)} | 接続数: ${playerCount}人 (アクティブ: ${activePlayerCount}人)`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🗺️  テリトリー数: ${territoryRects.length} rect | バージョン: ${territoryVersion}`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log(`║ 📤 ラウンド送信: ${formatBytes(bandwidthStats.periodBytesSent).padEnd(12)} (${formatBytes(sendRate)}/秒)`);
-    console.log(`║ 📥 ラウンド受信: ${formatBytes(bandwidthStats.periodBytesReceived).padEnd(12)} (${formatBytes(recvRate)}/秒)`);
-    console.log(`║ 📊 1人あたり送信: ${formatBytes(perPlayerSent).padEnd(12)} (${formatBytes(perPlayerRate)}/秒)`);
+    console.log(`║ 📡 ラウンド送信: ${formatBytes(bandwidthStats.periodBytesSent).padEnd(10)} (${formatBytes(sendRate)}/s)`);
+    console.log(`║ 📥 ラウンド受信: ${formatBytes(bandwidthStats.periodBytesReceived).padEnd(10)} (${formatBytes(recvRate)}/s)`);
+    console.log(`║ 👤 1人あたり送信: ${formatBytes(perPlayerSent).padEnd(10)}  (${formatBytes(perPlayerRate)}/s)`);
     console.log(`║ 📦 平均メッセージサイズ: ${formatBytes(avgMsgSize)}`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🔄 同期回数: フル ${bandwidthStats.periodFullSyncs} | 差分 ${bandwidthStats.periodDeltaSyncs}`);
     console.log(`║ 🗜️  gzip圧縮効果: ${compressionInfo}`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log(`║ 📈 [累計] 送信: ${formatBytes(bandwidthStats.totalBytesSent).padEnd(12)} | 受信: ${formatBytes(bandwidthStats.totalBytesReceived)}`);
-    console.log(`║ 🔮 [予測] このペースで1日: ${formatBytes(dailySend).padEnd(10)} | 1月: ${formatBytes(monthlySend)}`);
+    console.log(`║ 📊 [累計] 送信: ${formatBytes(bandwidthStats.totalBytesSent).padEnd(10)} | 受信: ${formatBytes(bandwidthStats.totalBytesReceived || 0)}`);
+    console.log(`║ 🔮 [予測] このペースで1日: ${formatBytes(dailySend).padEnd(8)} | 1月: ${formatBytes(monthlySend)}`);
     console.log('╚══════════════════════════════════════════════════════════════════════════════╝');
+    console.log('');
+
+    // JSON形式でも出力 (コピペ用)
+    const statsJson = {
+        timestamp: new Date().toISOString(),
+        uptimeSec: Math.round(uptimeSec),
+        roundDurationSec: Math.round(roundDuration),
+        mode: mode,
+        playerCount: playerCount,
+        activePlayerCount: activePlayerCount,
+        territoryRects: territoryRects.length,
+        territoryVersion: territoryVersion,
+        periodBytesSent: bandwidthStats.periodBytesSent,
+        periodBytesReceived: bandwidthStats.periodBytesReceived,
+        sendRateBps: Math.round(sendRate),
+        recvRateBps: Math.round(recvRate),
+        perPlayerSent: Math.round(perPlayerSent),
+        perPlayerRateBps: Math.round(perPlayerRate),
+        avgMsgSize: Math.round(avgMsgSize),
+        fullSyncs: bandwidthStats.periodFullSyncs,
+        deltaSyncs: bandwidthStats.periodDeltaSyncs,
+        cpuPercent: parseFloat(cpuPercent.toFixed(1)),
+        loadAvg1m: parseFloat(loadAvgStr) || 0,
+        avgLagMs: parseFloat(avgLag),
+        maxLagMs: maxLag,
+        totalBytesSent: bandwidthStats.totalBytesSent,
+        totalBytesReceived: bandwidthStats.totalBytesReceived || 0
+    };
+    console.log('[STATS_JSON]' + JSON.stringify(statsJson));
 }
 
+initGrid();
+server.listen(PORT, () => console.log("Server Grid Mode Started " + PORT));
+
 if (DEBUG_MODE) {
-    console.log('[DEBUG] デバッグモードで起動しました - ラウンド終了時に転送量統計を出力します');
+    console.log('[DEBUG] デバッグモードで起動しました');
+}
+if (STATS_MODE) {
+    console.log('[STATS] 統計モードで起動しました - ラウンド終了時に転送量統計を出力します');
 }

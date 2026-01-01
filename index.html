@@ -529,7 +529,7 @@
 
         // テリトリー差分を適用
         function applyTerritoryDelta(delta) {
-            // 削除処理
+            // 1. 削除処理: まずnullでマーク
             if (delta.r && delta.r.length > 0) {
                 delta.r.forEach(rem => {
                     const key = `${rem.x},${rem.y}`;
@@ -539,27 +539,31 @@
                         territoryMap.delete(key);
                     }
                 });
-                // null を除去
-                territories = territories.filter(t => t !== null);
-                rebuildTerritoryMap();  // インデックス再構築
             }
 
-            // 追加処理
+            // 2. 追加処理: 新しいテリトリーを追加（削除されたものと同じ座標でも新規扱い）
             if (delta.a && delta.a.length > 0) {
                 delta.a.forEach(add => {
                     const normalized = normalizeTerritory(add);
                     const key = `${normalized.x},${normalized.y}`;
+
+                    // 削除でマップから消えているはずなので、常に新規追加として処理
+                    // ただし念のため既存チェック
                     const existingIdx = territoryMap.get(key);
-                    if (existingIdx !== undefined) {
-                        // 既存を上書き
+                    if (existingIdx !== undefined && territories[existingIdx] !== null) {
+                        // 既存を上書き（通常はここには来ないはず）
                         territories[existingIdx] = normalized;
                     } else {
                         // 新規追加
-                        territoryMap.set(key, territories.length);
                         territories.push(normalized);
+                        // マップは後で再構築するので、ここでは更新しない
                     }
                 });
             }
+
+            // 3. null を除去してマップを再構築
+            territories = territories.filter(t => t !== null);
+            rebuildTerritoryMap();
         }
 
         function startGame() {
@@ -614,13 +618,19 @@
                 } else if (data.type === 's' || data.type === 'state') {
                     // 新形式 's' と旧形式 'state' の両方に対応
                     const playersData = data.p || data.players || [];
+                    const minimapData = data.mm; // ミニマップデータ (3秒に1回)
 
                     const lp = document.getElementById('login-pcount');
-                    if (lp) lp.textContent = `(${playersData.length}人プレイ中)`;
+                    // 人数表示（ミニマップデータがあれば正確、なければ近くのプレイヤー数）
+                    const playerCountToShow = minimapData ? minimapData.length : playersData.length;
+                    if (lp) lp.textContent = `(${playerCountToShow}人プレイ中)`;
 
+                    // ログイン画面のアイコン表示（近くの人のみ更新でOK）
                     const li = document.getElementById('login-players');
                     if (li && document.getElementById('login-modal').style.display !== 'none') {
+                        // 頻繁な書き換えを防ぐため、簡易実装のまま
                         li.innerHTML = '';
+                        // 自分に近い上位18人のみ表示
                         playersData.slice(0, 18).forEach(p => {
                             const div = document.createElement('div');
                             const color = p.c || p.color;
@@ -639,41 +649,37 @@
                         if (!isGameReady) updateTeamSelect();
                     }
 
-                    // Sync Players (新形式対応)
-                    const newIds = new Set(playersData.map(p => p.i || p.id));
+                    // 1. 詳細データの更新 (AOI範囲内)
+                    const detailsIds = new Set();
                     playersData.forEach(serverP => {
-                        // 新形式から旧形式に変換
+                        const sId = serverP.i || serverP.id;
+                        detailsIds.add(sId);
+
+                        // 正規化
                         const normalized = {
-                            id: serverP.i || serverP.id,
+                            id: sId,
                             x: serverP.x,
                             y: serverP.y,
                             color: serverP.c || serverP.color,
                             name: serverP.n || serverP.name,
                             emoji: serverP.e || serverP.emoji,
                             team: serverP.t || serverP.team,
-                            // trail: 新形式は [[x,y], ...] 配列、旧形式は [{x,y}, ...]
-                            trail: (serverP.r || serverP.trail || []).map(pt =>
-                                Array.isArray(pt) ? { x: pt[0], y: pt[1] } : pt
-                            ),
+                            trail: (serverP.r || serverP.trail || []).map(pt => Array.isArray(pt) ? { x: pt[0], y: pt[1] } : pt),
                             score: serverP.s !== undefined ? serverP.s : serverP.score,
-                            state: serverP.st !== undefined
-                                ? (serverP.st === 1 ? 'active' : (serverP.st === 0 ? 'dead' : 'waiting'))
-                                : serverP.state,
+                            state: serverP.st !== undefined ? (serverP.st === 1 ? 'active' : (serverP.st === 0 ? 'dead' : 'waiting')) : serverP.state,
                             invulnerableCount: serverP.iv !== undefined ? serverP.iv : serverP.invulnerableCount
                         };
 
                         let existing = players.find(p => p.id === normalized.id);
                         if (existing) {
+                            // スムージング処理
                             const distSq = (existing.x - normalized.x) ** 2 + (existing.y - normalized.y) ** 2;
                             if (distSq > 200 * 200) {
                                 existing.x = normalized.x;
                                 existing.y = normalized.y;
-                                existing.targetX = normalized.x;
-                                existing.targetY = normalized.y;
-                            } else {
-                                existing.targetX = normalized.x;
-                                existing.targetY = normalized.y;
                             }
+                            existing.targetX = normalized.x;
+                            existing.targetY = normalized.y;
 
                             existing.score = normalized.score;
                             existing.name = normalized.name;
@@ -683,13 +689,55 @@
                             existing.invulnerableCount = normalized.invulnerableCount;
                             existing.state = normalized.state;
                             existing.trail = normalized.trail;
+                            existing.hasDetail = true; // 詳細ありフラグ
                         } else {
                             normalized.targetX = normalized.x;
                             normalized.targetY = normalized.y;
+                            normalized.hasDetail = true;
                             players.push(normalized);
                         }
                     });
-                    players = players.filter(p => newIds.has(p.id));
+
+                    // 2. ミニマップデータの同期 (3秒に1回)
+                    // 切断者の削除や、遠くの敵の位置更新を行う
+                    if (minimapData) {
+                        const minimapIds = new Set(minimapData.map(m => m.i));
+
+                        minimapData.forEach(m => {
+                            // 詳細データが既に来ているならスキップ
+                            if (detailsIds.has(m.i)) return;
+
+                            let existing = players.find(p => p.id === m.i);
+                            if (existing) {
+                                // 遠くにいるので位置だけ更新（補間なしでワープさせるか、ターゲットだけ更新するか）
+                                // 3秒に1回なのでスムージングは厳しい。ワープさせる
+                                existing.targetX = m.x;
+                                existing.targetY = m.y;
+                                // existing.x = m.x; // 補間有効にするならコメントアウト
+                                // existing.y = m.y;
+                                existing.color = m.c;
+                                existing.hasDetail = false; // 詳細なし（アイコンだけ表示とかにするため）
+                            } else {
+                                // 視界外で出現したプレイヤー
+                                players.push({
+                                    id: m.i,
+                                    x: m.x,
+                                    y: m.y,
+                                    targetX: m.x,
+                                    targetY: m.y,
+                                    color: m.c,
+                                    name: '', // 名前不明
+                                    emoji: '',
+                                    trail: [],
+                                    hasDetail: false
+                                });
+                            }
+                        });
+
+                        // 削除処理: minimapDataに含まれないプレイヤーは完全に切断されたとみなす
+                        players = players.filter(p => minimapIds.has(p.id));
+                    }
+                    // 注意: minimapDataがないフレームでは、playersの削除を行わない（AOI範囲外になっただけの可能性があるため）
 
                     // テリトリー処理（フル同期 or 差分）
                     if (data.tf) {
@@ -702,7 +750,6 @@
                         applyTerritoryDelta(data.td);
                         territoryVersion = data.tv;
                     }
-                    // 旧形式の互換性
                     if (data.territories) {
                         territories = data.territories.map(normalizeTerritory);
                         rebuildTerritoryMap();
@@ -1154,12 +1201,8 @@
 
         function sendInput() {
             if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    type: 'input',
-                    dx: inputState.dx,
-                    dy: inputState.dy,
-                    drawing: inputState.drawing
-                }));
+                // 移動コマンド: 最小配列形式 [dx, dy]
+                socket.send(JSON.stringify([inputState.dx, inputState.dy]));
             }
         }
 
