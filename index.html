@@ -449,6 +449,9 @@
         <div id="virtual-joystick-stick"></div>
     </div>
 
+    <!-- pako library for gzip decompression -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+
     <script>
         //       const SERVER_URL = 'wss://new-node01.open2ch.net:2087';
         const SERVER_URL = 'wss://new-node02.open2ch.net:2053';
@@ -469,6 +472,10 @@
         let inputState = { dx: 0, dy: 0, drawing: false };
         let touchStartPos = null;
         let lastMinimapTime = 0;
+
+        // ミニマップビットマップキャッシュ
+        let minimapBitmapData = null;  // { imageData, palette, size }
+        let minimapPlayerPositions = []; // プレイヤー位置リスト
 
         const COLORS = {
             self: '#0ea5e9',
@@ -699,24 +706,52 @@
                     });
 
                     // 2. ミニマップデータの同期 (3秒に1回)
-                    // 切断者の削除や、遠くの敵の位置更新を行う
+                    // 新方式: ビットマップ + プレイヤー位置リスト
                     if (minimapData) {
-                        const minimapIds = new Set(minimapData.map(m => m.i));
+                        // テリトリービットマップの処理
+                        if (minimapData.tb) {
+                            try {
+                                const tb = minimapData.tb;
+                                const base64 = tb.bm;
+                                const palette = tb.cp;
+                                const size = tb.sz || 80;
 
-                        minimapData.forEach(m => {
+                                // Base64 → Uint8Array → pako解凍
+                                const binaryStr = atob(base64);
+                                const compressed = new Uint8Array(binaryStr.length);
+                                for (let i = 0; i < binaryStr.length; i++) {
+                                    compressed[i] = binaryStr.charCodeAt(i);
+                                }
+                                const bitmap = pako.inflate(compressed);
+
+                                // キャッシュに保存
+                                minimapBitmapData = {
+                                    bitmap: bitmap,
+                                    palette: palette,
+                                    size: size
+                                };
+                            } catch (e) {
+                                console.error('Minimap bitmap decode error:', e);
+                            }
+                        }
+
+                        // プレイヤー位置リストの処理
+                        const playerList = minimapData.pl || [];
+                        minimapPlayerPositions = playerList;
+
+                        const minimapIds = new Set(playerList.map(m => m.i));
+
+                        playerList.forEach(m => {
                             // 詳細データが既に来ているならスキップ
                             if (detailsIds.has(m.i)) return;
 
                             let existing = players.find(p => p.id === m.i);
                             if (existing) {
-                                // 遠くにいるので位置だけ更新（補間なしでワープさせるか、ターゲットだけ更新するか）
-                                // 3秒に1回なのでスムージングは厳しい。ワープさせる
+                                // 遠くにいるので位置だけ更新
                                 existing.targetX = m.x;
                                 existing.targetY = m.y;
-                                // existing.x = m.x; // 補間有効にするならコメントアウト
-                                // existing.y = m.y;
                                 existing.color = m.c;
-                                existing.hasDetail = false; // 詳細なし（アイコンだけ表示とかにするため）
+                                existing.hasDetail = false;
                             } else {
                                 // 視界外で出現したプレイヤー
                                 players.push({
@@ -726,7 +761,7 @@
                                     targetX: m.x,
                                     targetY: m.y,
                                     color: m.c,
-                                    name: '', // 名前不明
+                                    name: '',
                                     emoji: '',
                                     trail: [],
                                     hasDetail: false
@@ -1483,40 +1518,63 @@
             if (!world || !world.width) return;
             minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
 
-            const s = Math.min(minimapCanvas.width / world.width, minimapCanvas.height / world.height);
-            const ox = (minimapCanvas.width - world.width * s) / 2;
-            const oy = (minimapCanvas.height - world.height * s) / 2;
+            const canvasSize = minimapCanvas.width; // 80x80
+            const s = canvasSize / world.width;
+            const ox = 0;
+            const oy = 0;
 
-            // Draw Territories
-            territories.forEach(t => {
-                const drawX = t.x * s + ox;
-                const drawY = t.y * s + oy;
-                const drawW = t.w * s;
-                const drawH = t.h * s;
+            // 新方式: ビットマップから描画
+            if (minimapBitmapData && minimapBitmapData.bitmap) {
+                const { bitmap, palette, size } = minimapBitmapData;
+                const pixelSize = canvasSize / size; // 80/80 = 1
 
-                // Ensure visibility (min size)
-                const visW = Math.max(drawW, 0.5);
-                const visH = Math.max(drawH, 0.5);
-
-                if (t.color) {
-                    minimapCtx.fillStyle = t.color;
-                    minimapCtx.fillRect(drawX, drawY, visW, visH);
-                } else {
-                    const owner = Object.values(players).find(p => p.id === t.ownerId);
-                    if (owner) {
-                        minimapCtx.fillStyle = owner.color;
-                        minimapCtx.fillRect(drawX, drawY, visW, visH);
+                // ビットマップを描画
+                for (let y = 0; y < size; y++) {
+                    for (let x = 0; x < size; x++) {
+                        const colorIdx = bitmap[y * size + x];
+                        if (colorIdx > 0 && palette[colorIdx]) {
+                            minimapCtx.fillStyle = palette[colorIdx];
+                            minimapCtx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+                        }
                     }
                 }
-            });
+            } else {
+                // フォールバック: 従来方式（territories配列から描画）
+                territories.forEach(t => {
+                    const drawX = t.x * s + ox;
+                    const drawY = t.y * s + oy;
+                    const drawW = t.w * s;
+                    const drawH = t.h * s;
 
-            // Draw Players
-            Object.values(players).forEach(p => {
-                if (p.state !== 'active') return;
-                minimapCtx.fillStyle = (p.id === myId) ? '#fff' : p.color;
+                    const visW = Math.max(drawW, 0.5);
+                    const visH = Math.max(drawH, 0.5);
+
+                    if (t.color) {
+                        minimapCtx.fillStyle = t.color;
+                        minimapCtx.fillRect(drawX, drawY, visW, visH);
+                    } else {
+                        const owner = Object.values(players).find(p => p.id === t.ownerId);
+                        if (owner) {
+                            minimapCtx.fillStyle = owner.color;
+                            minimapCtx.fillRect(drawX, drawY, visW, visH);
+                        }
+                    }
+                });
+            }
+
+            // Draw Players (from minimapPlayerPositions or players array)
+            const playerSource = minimapPlayerPositions.length > 0 ? minimapPlayerPositions : players;
+            playerSource.forEach(p => {
+                const px = p.x;
+                const py = p.y;
+                const pid = p.i || p.id;
+                const pcolor = p.c || p.color;
+
+                if (p.state && p.state !== 'active') return;
+
+                minimapCtx.fillStyle = (pid === myId) ? '#fff' : pcolor;
                 minimapCtx.beginPath();
-                // Smaller dots for small minimap
-                minimapCtx.arc(p.x * s + ox, p.y * s + oy, (p.id === myId ? 1.5 : 1), 0, Math.PI * 2);
+                minimapCtx.arc(px * s + ox, py * s + oy, (pid === myId ? 1.5 : 1), 0, Math.PI * 2);
                 minimapCtx.fill();
             });
 

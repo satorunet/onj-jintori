@@ -113,7 +113,25 @@ let bandwidthStats = {
     cpuSystemStart: process.cpuUsage().system,
     lagSum: 0,
     lagMax: 0,
-    ticks: 0
+    ticks: 0,
+    // 機能別送信量 (ラウンド単位)
+    breakdown: {
+        players: 0,         // プレイヤーデータ (p)
+        territoryFull: 0,   // テリトリー全量 (tf)
+        territoryDelta: 0,  // テリトリー差分 (td)
+        minimap: 0,         // ミニマップ (mm)
+        teams: 0,           // チーム統計 (te)
+        base: 0,            // ベース情報 (type, tm)
+        other: 0            // その他 (round_end, chat, death等)
+    },
+    // 受信機能別
+    received: {
+        input: 0,           // 移動入力 [dx, dy]
+        join: 0,            // 参加リクエスト
+        chat: 0,            // チャット
+        updateTeam: 0,      // チーム更新
+        other: 0            // その他
+    }
 };
 
 let obstacles = [];
@@ -121,6 +139,12 @@ let timeRemaining = GAME_DURATION;
 let roundActive = true;
 let lastRoundWinner = null;
 let lastResultMsg = null;
+
+// ミニマップビットマップ設定
+const MINIMAP_SIZE = 80;  // 80x80ピクセル
+const MINIMAP_SCALE = WORLD_WIDTH / MINIMAP_SIZE;  // ダウンサンプル比率
+let minimapBitmapCache = null;  // 生成されたビットマップキャッシュ
+let minimapColorPalette = {};   // プレイヤーID → 色インデックス (1-255, 0は空)
 
 // Initialization
 function initGrid() {
@@ -424,6 +448,8 @@ function attemptCapture(playerId) {
     const trailCells = new Set();
     // トレイルで通過した敵陣地のセルを記録（座標とオーナー）
     const enemyTrailCells = [];
+    // トレイルで通過した空白セルを記録
+    const blankTrailCells = [];
 
     p.gridTrail.forEach(pt => {
         if (pt.x >= 0 && pt.x < GRID_COLS && pt.y >= 0 && pt.y < GRID_ROWS) {
@@ -437,6 +463,9 @@ function attemptCapture(playerId) {
                     if (ownerPlayer && ownerPlayer.team === p.team) return;
                 }
                 enemyTrailCells.push({ x: pt.x, y: pt.y, owner });
+            } else if (!owner || owner === null || owner === '') {
+                // 空白セルを記録
+                blankTrailCells.push({ x: pt.x, y: pt.y });
             }
         }
     });
@@ -515,13 +544,96 @@ function attemptCapture(playerId) {
         if (ownerIslands.length > 1) {
             // サイズで降順ソート
             ownerIslands.sort((a, b) => b.size - a.size);
-            // 最大のもの（index 0）を除外、それ以外（index 1以降）をキャプチャ対象に追加
-            for (let i = 1; i < ownerIslands.length; i++) {
-                ownerIslands[i].cells.forEach(idx => enemyCaptureZone.add(idx));
+            const maxSize = ownerIslands[0].size;
+
+            // 例外処理: 最大のIslandでも10セル以下なら全てキャプチャ（小さい穴は全部埋める）
+            if (maxSize <= 10) {
+                ownerIslands.forEach(island => {
+                    island.cells.forEach(idx => enemyCaptureZone.add(idx));
+                });
+            } else {
+                // 通常処理: 最大のもの（index 0）を除外、それ以外をキャプチャ対象に追加
+                for (let i = 1; i < ownerIslands.length; i++) {
+                    ownerIslands[i].cells.forEach(idx => enemyCaptureZone.add(idx));
+                }
             }
         }
         // 分断されていない（length=1）場合はキャプチャしない
     });
+
+    // 空白地のキャプチャゾーン計算
+    // トレイルで分断された空白地をIslandに分割し、最大以外をキャプチャ（敵陣地と同様の処理）
+    const blankCaptureZone = new Set();
+    const processedBlankCells = new Set();
+    const blankIslands = []; // [{ cells: Set<idx>, size: number }]
+
+    blankTrailCells.forEach(startCell => {
+        const neighbors = [
+            { x: startCell.x - 1, y: startCell.y },
+            { x: startCell.x + 1, y: startCell.y },
+            { x: startCell.x, y: startCell.y - 1 },
+            { x: startCell.x, y: startCell.y + 1 }
+        ];
+
+        neighbors.forEach(nb => {
+            if (nb.x < 0 || nb.x >= GRID_COLS || nb.y < 0 || nb.y >= GRID_ROWS) return;
+            const nbIdx = nb.y * GRID_COLS + nb.x;
+
+            const cellOwner = worldGrid[nb.y] && worldGrid[nb.y][nb.x];
+            // まだ処理していない、「内側」で「空白」かつ「トレイル上ではない」なら探索
+            if (!processedBlankCells.has(nbIdx) && visitedCur[nbIdx] === 0 && !cellOwner && !trailCells.has(nbIdx)) {
+                const islandCells = new Set();
+                const queue = [nb];
+                processedBlankCells.add(nbIdx);
+                islandCells.add(nbIdx);
+
+                while (queue.length > 0) {
+                    const { x, y } = queue.shift();
+                    const nextNeighbors = [
+                        { x: x - 1, y: y }, { x: x + 1, y: y },
+                        { x: x, y: y - 1 }, { x: x, y: y + 1 }
+                    ];
+
+                    nextNeighbors.forEach(n => {
+                        if (n.x >= 0 && n.x < GRID_COLS && n.y >= 0 && n.y < GRID_ROWS) {
+                            const nIdx = n.y * GRID_COLS + n.x;
+                            if (!processedBlankCells.has(nIdx)) {
+                                const nOwner = worldGrid[n.y][n.x];
+                                if (visitedCur[nIdx] === 0 && !nOwner && !trailCells.has(nIdx)) {
+                                    processedBlankCells.add(nIdx);
+                                    islandCells.add(nIdx);
+                                    queue.push(n);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (islandCells.size > 0) {
+                    blankIslands.push({ cells: islandCells, size: islandCells.size });
+                }
+            }
+        });
+    });
+
+    // 空白Islandが複数ある場合（分断された場合）、最大以外をキャプチャ対象に
+    // ※敵陣地と同じロジック: 分断されていない（length=1）場合はキャプチャしない
+    if (blankIslands.length > 1) {
+        blankIslands.sort((a, b) => b.size - a.size);
+        const maxSize = blankIslands[0].size;
+
+        // 例外処理: 最大のIslandでも10セル以下なら全てキャプチャ（小さい穴は全部埋める）
+        if (maxSize <= 10) {
+            blankIslands.forEach(island => {
+                island.cells.forEach(idx => blankCaptureZone.add(idx));
+            });
+        } else {
+            // 通常処理: 最大のもの（index 0）を除外、それ以外をキャプチャ対象に追加
+            for (let i = 1; i < blankIslands.length; i++) {
+                blankIslands[i].cells.forEach(idx => blankCaptureZone.add(idx));
+            }
+        }
+    }
 
     // Capture Step
     let capturedCount = 0;
@@ -541,7 +653,10 @@ function attemptCapture(playerId) {
             // トレイルから連続している敵陣地のキャプチャ可能ゾーン（分断された小さい方）
             const isEnemyCapturable = enemyCaptureZone.has(idx);
 
-            if ((isNewlyEnclosed || isEnemyCapturable) && oldOwner !== 'obstacle') {
+            // トレイルで通過した空白から連続する空白地のキャプチャゾーン
+            const isBlankCapturable = blankCaptureZone.has(idx);
+
+            if ((isNewlyEnclosed || isEnemyCapturable || isBlankCapturable) && oldOwner !== 'obstacle') {
 
                 let isTeammate = false;
                 if (p.team && oldOwner) {
@@ -1120,6 +1235,57 @@ function getTeamStats() {
         .map(name => ({ name, count: counts[name] }));
 }
 
+// ミニマップビットマップ生成 (80x80ピクセル)
+// 返り値: { bm: Base64圧縮ビットマップ, cp: 色パレット配列 }
+function generateMinimapBitmap() {
+    const scale = WORLD_WIDTH / MINIMAP_SIZE;
+    const gridScale = scale / GRID_SIZE;  // 1ミニマップピクセル = 何グリッドセルか
+
+    // 色パレット構築: 現在のプレイヤーID → インデックス (1-255)
+    const palette = {};  // id -> index
+    const colors = [''];  // index 0 = 空 (透明/背景)
+    let colorIdx = 1;
+
+    Object.values(players).forEach(p => {
+        if (p.state !== 'waiting' && !palette[p.id]) {
+            palette[p.id] = colorIdx;
+            colors[colorIdx] = p.color;
+            colorIdx++;
+            if (colorIdx > 255) colorIdx = 255; // 最大255プレイヤー
+        }
+    });
+
+    // ビットマップ生成 (80x80 = 6400 bytes)
+    const bitmap = new Uint8Array(MINIMAP_SIZE * MINIMAP_SIZE);
+
+    for (let my = 0; my < MINIMAP_SIZE; my++) {
+        for (let mx = 0; mx < MINIMAP_SIZE; mx++) {
+            // このミニマップピクセルに対応するグリッド中心座標
+            const gx = Math.floor((mx + 0.5) * gridScale);
+            const gy = Math.floor((my + 0.5) * gridScale);
+
+            // グリッド範囲チェック
+            if (gy >= 0 && gy < GRID_ROWS && gx >= 0 && gx < GRID_COLS) {
+                const owner = worldGrid[gy][gx];
+                if (owner && owner !== 'obstacle' && palette[owner]) {
+                    bitmap[my * MINIMAP_SIZE + mx] = palette[owner];
+                }
+                // 0 = 空 or 障害物
+            }
+        }
+    }
+
+    // gzip圧縮 → Base64エンコード
+    const compressed = zlib.deflateSync(Buffer.from(bitmap), { level: 6 });
+    const base64 = compressed.toString('base64');
+
+    return {
+        bm: base64,      // bitmap (Base64 gzip)
+        cp: colors,      // color palette (index -> hex color)
+        sz: MINIMAP_SIZE // size (常に80だが互換性のため)
+    };
+}
+
 // Network
 wss.on('connection', ws => {
     const id = generateId();
@@ -1168,6 +1334,7 @@ wss.on('connection', ws => {
             const p = players[id];
             if (!p) return;
             if (data.type === 'join') {
+                bandwidthStats.received.join += byteLen;
                 let name = data.name || 'NoName';
                 let team = data.team || '';
                 // Sanitize
@@ -1204,15 +1371,19 @@ wss.on('connection', ws => {
 
                 respawnPlayer(p, true);
             } else if (data.type === 'update_team') {
+                bandwidthStats.received.updateTeam += byteLen;
                 let team = data.team || '';
                 team = team.replace(/[\[\]]/g, '').substr(0, 3);
                 p.requestedTeam = team;
             } else if (data.type === 'chat') {
+                bandwidthStats.received.chat += byteLen;
                 const text = (data.text || '').toString().substring(0, 50);
                 if (text.trim().length > 0) {
                     broadcast({ type: 'chat', text: text, color: p.color, name: p.name });
+                    bandwidthStats.breakdown.other += 50; // chat送信の概算
                 }
             } else if (Array.isArray(data) && data.length === 2 && p.state === 'active') {
+                bandwidthStats.received.input += byteLen;
                 // 移動コマンド: 配列形式 [dx, dy] で最軽量化
                 const dx = data[0];
                 const dy = data[1];
@@ -1226,6 +1397,8 @@ wss.on('connection', ws => {
                     p.dy = dy / mag;
                     p.invulnerableUntil = 0;
                 }
+            } else {
+                bandwidthStats.received.other += byteLen;
             }
         } catch (e) { }
     });
@@ -1272,15 +1445,24 @@ setInterval(() => {
     });
 
     // 2. ミニマップ用データ（3秒に1回生成）
-    // 軽量化のため、ID, x, y, color のみ
+    // 新方式: ビットマップ + プレイヤー位置 (テリトリーは圧縮ビットマップ、プレイヤーは座標リスト)
     let minimapData = null;
     if (frameCount % 20 === 0) { // 150ms * 20 = 3000ms (3秒)
-        minimapData = allPlayersData.map(p => ({
+        // テリトリービットマップ生成
+        const territoryBitmap = generateMinimapBitmap();
+
+        // プレイヤー位置（軽量: id, x, y, color のみ）
+        const playerPositions = allPlayersData.map(p => ({
             i: p.i,
             x: p.x,
             y: p.y,
             c: p.c
         }));
+
+        minimapData = {
+            tb: territoryBitmap,  // territory bitmap { bm, cp, sz }
+            pl: playerPositions   // player list
+        };
     }
 
     // 3. 共通ステート（領土情報など）
@@ -1357,7 +1539,6 @@ setInterval(() => {
         });
 
         // メッセージ構築
-        // spread構文(...)を使うと遅いので、Object.assignか直接代入推奨だが、可読性重視で構築
         const msg = {
             ...baseStateMsg,
             p: visiblePlayers
@@ -1370,10 +1551,10 @@ setInterval(() => {
 
         // フル同期チェック
         const lastVersion = lastFullSyncVersion[c.playerId] || 0;
-        if (territoryVersion - lastVersion > 50 || lastVersion === 0) { // しきい値を10->50に緩和
+        if (territoryVersion - lastVersion > 50 || lastVersion === 0) {
             msg.tf = territoryRects;
             msg.tv = territoryVersion;
-            delete msg.td; // 差分削除
+            delete msg.td;
             lastFullSyncVersion[c.playerId] = territoryVersion;
             bandwidthStats.periodFullSyncs++;
         } else {
@@ -1390,6 +1571,19 @@ setInterval(() => {
         bandwidthStats.periodBytesSent += byteLen;
         bandwidthStats.msgsSent++;
         bandwidthStats.periodMsgsSent++;
+
+        // 機能別サイズ計測（サンプリング: 20回に1回のみ）
+        if (frameCount % 20 === 1) {
+            try {
+                // 各フィールドの推定サイズ（個別エンコード）
+                bandwidthStats.breakdown.base += msgpack.encode({ type: msg.type, tm: msg.tm }).length;
+                bandwidthStats.breakdown.teams += msgpack.encode({ te: msg.te }).length;
+                bandwidthStats.breakdown.players += msgpack.encode({ p: msg.p }).length;
+                if (msg.mm) bandwidthStats.breakdown.minimap += msgpack.encode({ mm: msg.mm }).length;
+                if (msg.tf) bandwidthStats.breakdown.territoryFull += msgpack.encode({ tf: msg.tf }).length;
+                if (msg.td) bandwidthStats.breakdown.territoryDelta += msgpack.encode({ td: msg.td }).length;
+            } catch (e) { /* ignore */ }
+        }
     });
 }, 150);  // 100ms → 150ms に変更（秒間約6.7回、さらに33%削減）
 
@@ -1433,6 +1627,24 @@ function resetRoundStats() {
     bandwidthStats.periodStart = Date.now();
     bandwidthStats.roundPlayerCount = Object.keys(players).length;
     bandwidthStats.roundMode = GAME_MODES[currentModeIdx];
+
+    // 機能別内訳リセット
+    bandwidthStats.breakdown = {
+        players: 0,
+        territoryFull: 0,
+        territoryDelta: 0,
+        minimap: 0,
+        teams: 0,
+        base: 0,
+        other: 0
+    };
+    bandwidthStats.received = {
+        input: 0,
+        join: 0,
+        chat: 0,
+        updateTeam: 0,
+        other: 0
+    };
 }
 
 // ラウンド終了時の統計出力
@@ -1506,11 +1718,20 @@ function printRoundStats() {
     const dailySend = sendRate * 60 * 60 * 24;
     const monthlySend = dailySend * 30;
 
+    // 機能別内訳の計算
+    const bd = bandwidthStats.breakdown;
+    const totalBreakdown = bd.players + bd.territoryFull + bd.territoryDelta + bd.minimap + bd.teams + bd.base + bd.other;
+    const calcPercent = (val) => totalBreakdown > 0 ? ((val / totalBreakdown) * 100).toFixed(1) : '0.0';
+
+    const rv = bandwidthStats.received;
+    const totalReceived = rv.input + rv.join + rv.chat + rv.updateTeam + rv.other;
+    const calcRecvPercent = (val) => totalReceived > 0 ? ((val / totalReceived) * 100).toFixed(1) : '0.0';
+
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════════════════════╗');
     console.log('║                📊 ラウンド終了 - 転送量＆負荷統計レポート                     ║');
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log('║ ⚡ 実装中の負荷対策: [MsgPack] [AOI(Distance)] [Minimap Interleave]           ║');
+    console.log('║ ⚡ 実装中の負荷対策: [MsgPack] [AOI(Distance)] [Minimap Bitmap]              ║');
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🕐 稼働: ${formatTime(uptimeSec).padEnd(15)} | ラウンド: ${formatTime(roundDuration)}`);
     console.log(`║ 💻 CPU使用率: ${cpuPercent.toFixed(1)}% | LA(1m): ${loadAvgStr} | 平均ラグ: ${avgLag}ms (Max: ${maxLag}ms)`);
@@ -1518,15 +1739,31 @@ function printRoundStats() {
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🗺️  テリトリー数: ${territoryRects.length} rect | バージョン: ${territoryVersion}`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log(`║ 📡 ラウンド送信: ${formatBytes(bandwidthStats.periodBytesSent).padEnd(10)} (${formatBytes(sendRate)}/s)`);
-    console.log(`║ 📥 ラウンド受信: ${formatBytes(bandwidthStats.periodBytesReceived).padEnd(10)} (${formatBytes(recvRate)}/s)`);
+    console.log(`║ 📡 ラウンド送信 (サーバ→クライアント): ${formatBytes(bandwidthStats.periodBytesSent).padEnd(10)} (${formatBytes(sendRate)}/s)`);
+    console.log(`║ 📥 ラウンド受信 (クライアント→サーバ): ${formatBytes(bandwidthStats.periodBytesReceived).padEnd(10)} (${formatBytes(recvRate)}/s)`);
     console.log(`║ 👤 1人あたり送信: ${formatBytes(perPlayerSent).padEnd(10)}  (${formatBytes(perPlayerRate)}/s)`);
     console.log(`║ 📦 平均メッセージサイズ: ${formatBytes(avgMsgSize)}`);
+    console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
+    console.log('║ 📊 【送信内訳 (サンプリング値, Server→Client)】                              ║');
+    console.log(`║   👥 プレイヤーデータ (p):  ${formatBytes(bd.players).padEnd(10)} ${calcPercent(bd.players).padStart(5)}%`);
+    console.log(`║   🗺️  テリトリー全量 (tf): ${formatBytes(bd.territoryFull).padEnd(10)} ${calcPercent(bd.territoryFull).padStart(5)}%`);
+    console.log(`║   📝 テリトリー差分 (td): ${formatBytes(bd.territoryDelta).padEnd(10)} ${calcPercent(bd.territoryDelta).padStart(5)}%`);
+    console.log(`║   🔍 ミニマップ (mm):      ${formatBytes(bd.minimap).padEnd(10)} ${calcPercent(bd.minimap).padStart(5)}%`);
+    console.log(`║   👯 チーム統計 (te):      ${formatBytes(bd.teams).padEnd(10)} ${calcPercent(bd.teams).padStart(5)}%`);
+    console.log(`║   🏷️  ベース情報:          ${formatBytes(bd.base).padEnd(10)} ${calcPercent(bd.base).padStart(5)}%`);
+    console.log(`║   📦 その他:              ${formatBytes(bd.other).padEnd(10)} ${calcPercent(bd.other).padStart(5)}%`);
+    console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
+    console.log('║ 📥 【受信内訳 (Client→Server)】                                              ║');
+    console.log(`║   🎮 移動入力:    ${formatBytes(rv.input).padEnd(10)} ${calcRecvPercent(rv.input).padStart(5)}%`);
+    console.log(`║   🚀 参加:        ${formatBytes(rv.join).padEnd(10)} ${calcRecvPercent(rv.join).padStart(5)}%`);
+    console.log(`║   💬 チャット:    ${formatBytes(rv.chat).padEnd(10)} ${calcRecvPercent(rv.chat).padStart(5)}%`);
+    console.log(`║   🏷️  チーム変更:  ${formatBytes(rv.updateTeam).padEnd(10)} ${calcRecvPercent(rv.updateTeam).padStart(5)}%`);
+    console.log(`║   📦 その他:      ${formatBytes(rv.other).padEnd(10)} ${calcRecvPercent(rv.other).padStart(5)}%`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
     console.log(`║ 🔄 同期回数: フル ${bandwidthStats.periodFullSyncs} | 差分 ${bandwidthStats.periodDeltaSyncs}`);
     console.log(`║ 🗜️  gzip圧縮効果: ${compressionInfo}`);
     console.log('╠══════════════════════════════════════════════════════════════════════════════╣');
-    console.log(`║ 📊 [累計] 送信: ${formatBytes(bandwidthStats.totalBytesSent).padEnd(10)} | 受信: ${formatBytes(bandwidthStats.totalBytesReceived || 0)}`);
+    console.log(`║ 📊 [累計] 送信(→クライアント): ${formatBytes(bandwidthStats.totalBytesSent).padEnd(10)} | 受信(←クライアント): ${formatBytes(bandwidthStats.totalBytesReceived || 0)}`);
     console.log(`║ 🔮 [予測] このペースで1日: ${formatBytes(dailySend).padEnd(8)} | 1月: ${formatBytes(monthlySend)}`);
     console.log('╚══════════════════════════════════════════════════════════════════════════════╝');
     console.log('');
@@ -1555,7 +1792,24 @@ function printRoundStats() {
         avgLagMs: parseFloat(avgLag),
         maxLagMs: maxLag,
         totalBytesSent: bandwidthStats.totalBytesSent,
-        totalBytesReceived: bandwidthStats.totalBytesReceived || 0
+        totalBytesReceived: bandwidthStats.totalBytesReceived || 0,
+        // 機能別内訳
+        breakdown: {
+            players: bd.players,
+            territoryFull: bd.territoryFull,
+            territoryDelta: bd.territoryDelta,
+            minimap: bd.minimap,
+            teams: bd.teams,
+            base: bd.base,
+            other: bd.other
+        },
+        received: {
+            input: rv.input,
+            join: rv.join,
+            chat: rv.chat,
+            updateTeam: rv.updateTeam,
+            other: rv.other
+        }
     };
     console.log('[STATS_JSON]' + JSON.stringify(statsJson));
 }
