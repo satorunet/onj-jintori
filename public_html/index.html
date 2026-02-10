@@ -8,13 +8,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>onj-Jintori(新鯖)</title>
-    <link rel="stylesheet" href="style.css?v=2601061732">
-    <!-- ... -->
-    <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2601061732"></script>
-    <script src="client/client-network.js?v=2601061732"></script>
-    <script src="client/client-game.js?v=2601061732"></script>
-    <script src="client/client-ui.js?v=2601061732"></script>
+    <link rel="stylesheet" href="style.css?v=2601111828">
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
 </head>
@@ -31,15 +25,43 @@
                 style="display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-bottom:15px; min-height:30px;">
             </div>
             <input type="text" id="username-input" class="login-input" placeholder="名前を入力 (任意)" maxlength="8">
-            <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字) (任意)" maxlength="3"
-                style="margin-top: 10px;">
+            <div style="display:flex; gap:5px; margin-top:10px; align-items:center;">
+                <select id="flag-select" class="login-input" style="width:70px; padding:8px 4px; font-size:1.2rem; cursor:pointer;">
+                    <option value="">🏳️ なし</option>
+                    <option value="🇯🇵">🇯🇵 日本</option>
+                    <option value="🇺🇸">🇺🇸 アメリカ</option>
+                    <option value="🇬🇧">🇬🇧 イギリス</option>
+                    <option value="🇰🇷">🇰🇷 韓国</option>
+                    <option value="🇨🇳">🇨🇳 中国</option>
+                    <option value="🇹🇼">🇹🇼 台湾</option>
+                    <option value="🇩🇪">🇩🇪 ドイツ</option>
+                    <option value="🇫🇷">🇫🇷 フランス</option>
+                    <option value="🇮🇹">🇮🇹 イタリア</option>
+                    <option value="🇪🇸">🇪🇸 スペイン</option>
+                    <option value="🇧🇷">🇧🇷 ブラジル</option>
+                    <option value="🇷🇺">🇷🇺 ロシア</option>
+                    <option value="🇺🇦">🇺🇦 ウクライナ</option>
+                    <option value="🇮🇳">🇮🇳 インド</option>
+                    <option value="🇦🇺">🇦🇺 オーストラリア</option>
+                    <option value="🇨🇦">🇨🇦 カナダ</option>
+                    <option value="🇲🇽">🇲🇽 メキシコ</option>
+                    <option value="🇸🇦">🇸🇦 サウジ</option>
+                    <option value="🇹🇭">🇹🇭 タイ</option>
+                    <option value="🇻🇳">🇻🇳 ベトナム</option>
+                    <option value="🇵🇭">🇵🇭 フィリピン</option>
+                    <option value="🇻🇪">🇻🇪 ベネズエラ</option>
+                </select>
+                <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字)" maxlength="3" style="flex:1;">
+            </div>
             <select id="team-select" class="login-input" style="margin-top: 10px; display:none; cursor:pointer;"
-                onchange="if(this.value) document.getElementById('team-input').value = this.value">
+                onchange="selectExistingTeam(this.value)">
                 <option value="">既存チームから選択</option>
             </select>
             <button class="action-btn" onclick="startGame()">ゲームスタート</button>
-            <button class="action-btn" style="background:#475569; margin-top:10px;" onclick="showHistoryModal()">📊
-                ランキング</button>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="action-btn" style="background:#475569; flex:1;" onclick="showHistoryModal()">📊 ランキング</button>
+                <button class="action-btn" style="background:#475569; flex:1;" onclick="showSettingsModal()">⚙️ 設定</button>
+            </div>
         </div>
     </div>
 
@@ -86,13 +108,75 @@
         </div>
     </div>
 
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal" style="display: none;">
+        <div class="modal-box" style="max-width:400px;">
+            <div class="modal-title" style="margin-bottom:20px;">⚙️ 設定</div>
+            
+            <div style="margin-bottom:20px;">
+                <div style="color:#94a3b8; font-size:0.85rem; margin-bottom:8px;">描画品質</div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button id="perf-auto" class="setting-btn" onclick="setPerformanceMode('auto')">
+                        🔄 自動
+                    </button>
+                    <button id="perf-high" class="setting-btn" onclick="setPerformanceMode('high')">
+                        ✨ 高品質
+                    </button>
+                    <button id="perf-low" class="setting-btn" onclick="setPerformanceMode('low')">
+                        ⚡ 軽量
+                    </button>
+                </div>
+                <div id="perf-description" style="color:#64748b; font-size:0.75rem; margin-top:8px;">
+                    FPSに応じて自動的に切り替えます
+                </div>
+            </div>
+            
+            <div style="border-top:1px solid #334155; padding-top:15px; margin-top:15px;">
+                <div style="color:#64748b; font-size:0.75rem;">
+                    💡 カクつく場合は「軽量」モードをお試しください
+                </div>
+            </div>
+            
+            <button class="action-btn" style="background:#64748b; margin-top:20px;"
+                onclick="hideSettingsModal()">閉じる</button>
+        </div>
+    </div>
+
+    <!-- 次のラウンドカウントダウン（画面上部固定） -->
+    <div id="next-round-countdown" style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 10000;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(15, 23, 42, 0.8) 100%);
+        padding: 6px 12px;
+        text-align: center;
+        border-bottom: 1px solid #3b82f6;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    ">
+        <div style="color: #fff; font-size: 13px; font-weight: normal;">
+            <span id="next-round-countdown-text">15秒後に次のラウンドへ...</span>
+        </div>
+    </div>
+
     <!-- Result Screen -->
     <div id="result-modal" class="modal" style="display: none;">
         <div class="modal-box">
             <div class="modal-title" id="result-title">ラウンド終了</div>
-            <div style="display:flex; justify-content:center; margin-bottom:10px;">
+            <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:10px;">
                 <canvas id="result-map" width="300" height="300"
                     style="background:rgba(0,0,0,0.5); border:1px solid #475569; width:200px; height:200px;"></canvas>
+                <div id="history-slider-container" style="width:200px; margin-top:5px; display:none;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span id="history-time-display" style="font-size:11px; color:#94a3b8; min-width:35px;">0:00</span>
+                        <input type="range" id="history-slider" min="0" max="100" value="100" 
+                            style="flex:1; height:6px; cursor:pointer; accent-color:#3b82f6;">
+                        <button id="history-play-btn" onclick="toggleHistoryPlayback()" 
+                            style="padding:2px 8px; background:#3b82f6; border:none; color:#fff; border-radius:4px; cursor:pointer; font-size:11px;">⏸</button>
+                    </div>
+                </div>
             </div>
             <div style="max-height: 500px; overflow-y: auto;">
                 <div style="display:flex; flex-direction:column; gap:15px;">
@@ -202,10 +286,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
     <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2601061732"></script>
-    <script src="client/client-network.js?v=2601061732"></script>
-    <script src="client/client-game.js?v=2601061732"></script>
-    <script src="client/client-ui.js?v=2601061732"></script>
+    <script src="client/client-config.js?v=2601121026"></script>
+    <script src="client/client-network.js?v=2601121026"></script>
+    <script src="client/client-game.js?v=2601121026"></script>
+    <script src="client/client-ui.js?v=2601121026"></script>
 </body>
 
 </html>

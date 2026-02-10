@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jintori - 管理画面</title>
+    <link href="https://fonts.googleapis.com/css2?family=Yomogi&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #1e293b;
+            --card-bg: #334155;
+            --text-color: #f1f5f9;
+            --accent: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: "Yomogi", cursive;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: var(--accent);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #475569;
+            color: white;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 1rem;
+        }
+
+        .tab-btn.active {
+            background: var(--accent);
+        }
+
+        .content {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        th,
+        td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #475569;
+        }
+
+        th {
+            background: #475569;
+            color: #94a3b8;
+        }
+
+        tr:hover {
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card h3 {
+            margin-bottom: 15px;
+            color: #94a3b8;
+        }
+
+        .loading {
+            text-align: center;
+            color: #94a3b8;
+            padding: 40px;
+        }
+
+        .error {
+            text-align: center;
+            color: #ef4444;
+            padding: 40px;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            background: #1e293b;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-box .value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--accent);
+        }
+
+        .stat-box .label {
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎮 Jintori 管理画面</h1>
+
+    <div class="tabs">
+        <button class="tab-btn" onclick="loadTab('realtime')">🔴 リアルタイム</button>
+        <button class="tab-btn active" onclick="loadTab('stats')">📈 サーバー負荷</button>
+        <button class="tab-btn" onclick="loadTab('rounds')">🏆 ラウンド履歴</button>
+        <button class="tab-btn" onclick="loadTab('players')">👤 プレイヤー統計</button>
+        <button class="tab-btn" onclick="loadTab('teams')">🏅 チーム統計</button>
+        <button class="tab-btn" style="background:#ef4444;" onclick="resetData()">⚠️ データリセット</button>
+    </div>
+
+    <div class="content" id="content">
+        <div class="loading">読み込み中...</div>
+    </div>
+
+    <script>
+        // APIエンドポイントの自動判定
+        // サーバー上(localhostなど)にある場合は相対パス、ローカルファイルの場合は固定URL
+        const API_BASE = (location.protocol === 'file:') 
+            ? 'http://localhost:2053' 
+            : ''; 
+        // const API_BASE = 'https://zin-new.open2ch.net:2053';
+        let currentTab = 'stats';
+        let realtimeInterval = null;
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+            return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        }
+
+        function formatTime(sec) {
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        async function loadTab(tab) {
+            currentTab = tab;
+
+            // リアルタイム更新を停止
+            if (realtimeInterval) {
+                clearInterval(realtimeInterval);
+                realtimeInterval = null;
+            }
+
+            document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+                btn.classList.toggle('active', ['realtime', 'stats', 'rounds', 'players', 'teams'][i] === tab);
+            });
+
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading">読み込み中...</div>';
+
+            try {
+                if (tab === 'realtime') {
+                    await loadRealtime();
+                    // 5秒ごとに自動更新
+                    realtimeInterval = setInterval(loadRealtime, 5000);
+
+                } else if (tab === 'stats') {
+                    const res = await fetch(API_BASE + '/api/server-stats', { credentials: 'include' });
+                    const data = await res.json();
+
+                    let html = '<div class="card"><h3>最近のラウンド統計</h3>';
+
+                    // 統計サマリ
+                    if (data.recent.length > 0) {
+                        const latest = data.recent[0];
+                        html += '<div class="stat-grid">';
+                        html += `<div class="stat-box"><div class="value">${data.recent.length}</div><div class="label">記録済みラウンド</div></div>`;
+                        html += `<div class="stat-box"><div class="value">${latest.cpu_percent}%</div><div class="label">最新CPU</div></div>`;
+                        html += `<div class="stat-box"><div class="value">${latest.avg_lag_ms}ms</div><div class="label">最新ラグ</div></div>`;
+                        html += `<div class="stat-box"><div class="value">${latest.active_player_count}</div><div class="label">最新アクティブ</div></div>`;
+                        html += `<div class="stat-box"><div class="value">${latest.heap_used_mb || 0} MB</div><div class="label">最新Heap</div></div>`;
+                        html += `<div class="stat-box"><div class="value">${latest.rss_mb || 0} MB</div><div class="label">最新RSS</div></div>`;
+                        html += '</div>';
+                    }
+
+                    html += '<table><thead><tr><th>日時</th><th>モード</th><th>時間</th><th>人数</th><th>送信量</th><th>CPU</th><th>Heap</th><th>システムメモリ</th><th>ラグ</th></tr></thead><tbody>';
+                    data.recent.forEach(r => {
+                        const date = new Date(r.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        const mb = (r.bytes_sent / 1024 / 1024).toFixed(1);
+                        const sysMemPctColor = (r.system_mem_usage_pct || 0) > 80 ? '#ef4444' : (r.system_mem_usage_pct || 0) > 60 ? '#eab308' : '#22c55e';
+                        html += `<tr><td>${date}</td><td>${r.mode}</td><td>${r.round_duration_sec}s</td><td>${r.active_player_count}/${r.player_count}</td><td>${mb}MB</td><td>${r.cpu_percent}%</td><td>${r.heap_used_mb || 0}MB</td><td style="color:${sysMemPctColor}">${r.system_mem_usage_pct || 0}%</td><td>${r.avg_lag_ms}ms</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+
+                    // 日別サマリ
+                    if (data.daily && data.daily.length > 0) {
+                        html += '<div class="card"><h3>日別サマリ</h3>';
+                        html += '<table><thead><tr><th>日付</th><th>ラウンド</th><th>総プレイヤー</th><th>平均アクティブ</th><th>総送信量</th><th>平均CPU</th><th>平均Heap</th><th>平均システムメモリ</th><th>最大システムメモリ</th></tr></thead><tbody>';
+                        data.daily.forEach(d => {
+                            const gb = (d.total_bytes_sent / 1024 / 1024 / 1024).toFixed(2);
+                            const avgSysMemColor = (d.avg_sys_mem_pct || 0) > 80 ? '#ef4444' : (d.avg_sys_mem_pct || 0) > 60 ? '#eab308' : '#22c55e';
+                            const maxSysMemColor = (d.max_sys_mem_pct || 0) > 80 ? '#ef4444' : (d.max_sys_mem_pct || 0) > 60 ? '#eab308' : '#22c55e';
+                            html += `<tr><td>${d.date}</td><td>${d.total_rounds}</td><td>${d.total_players}</td><td>${d.avg_active}</td><td>${gb}GB</td><td>${d.avg_cpu}%</td><td>${d.avg_heap || 0}MB</td><td style="color:${avgSysMemColor}">${d.avg_sys_mem_pct || 0}%</td><td style="color:${maxSysMemColor}">${d.max_sys_mem_pct || 0}%</td></tr>`;
+                        });
+                        html += '</tbody></table></div>';
+                    }
+                    content.innerHTML = html;
+
+                } else if (tab === 'rounds') {
+                    const res = await fetch(API_BASE + '/api/rounds', { credentials: 'include' });
+                    const data = await res.json();
+                    let html = '<div class="card"><h3>最近のラウンド</h3>';
+                    html += '<table><thead><tr><th>日時</th><th>モード</th><th>人数</th><th>優勝者</th><th>スコア</th></tr></thead><tbody>';
+                    data.forEach(r => {
+                        const date = new Date(r.played_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        html += `<tr><td>${date}</td><td>${r.mode}</td><td>${r.player_count}</td><td>${r.winner || '-'}</td><td>${r.winner_score || '-'}</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                    content.innerHTML = html;
+
+                } else if (tab === 'players') {
+                    const res = await fetch(API_BASE + '/api/player-stats', { credentials: 'include' });
+                    const data = await res.json();
+                    let html = '<div class="card"><h3>プレイヤー累計統計</h3>';
+                    html += '<table><thead><tr><th>#</th><th>名前</th><th>試合数</th><th>1位</th><th>累計スコア</th><th>キル</th><th>平均</th><th>最高</th></tr></thead><tbody>';
+                    data.forEach((p, i) => {
+                        html += `<tr><td>${i + 1}</td><td>${p.player_name}</td><td>${p.total_games}</td><td>${p.wins}</td><td>${p.total_score}</td><td>${p.total_kills}</td><td>${p.avg_score}</td><td>${p.best_score}</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                    content.innerHTML = html;
+
+                } else if (tab === 'teams') {
+                    const res = await fetch(API_BASE + '/api/team-stats', { credentials: 'include' });
+                    const data = await res.json();
+                    let html = '<div class="card"><h3>チーム累計統計</h3>';
+                    html += '<table><thead><tr><th>#</th><th>チーム</th><th>試合数</th><th>1位</th><th>累計スコア</th><th>キル</th><th>平均</th><th>最高</th></tr></thead><tbody>';
+                    data.forEach((t, i) => {
+                        html += `<tr><td>${i + 1}</td><td>${t.team_name}</td><td>${t.total_games}</td><td>${t.wins}</td><td>${t.total_score}</td><td>${t.total_kills}</td><td>${t.avg_score}</td><td>${t.best_score}</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                    content.innerHTML = html;
+                }
+            } catch (e) {
+                content.innerHTML = '<div class="error">読み込みエラー: ' + e.message + '</div>';
+            }
+        }
+
+        async function loadRealtime() {
+            try {
+                const res = await fetch(API_BASE + '/api/server-realtime', { credentials: 'include' });
+                const data = await res.json();
+                const content = document.getElementById('content');
+
+                const uptimeStr = `${Math.floor(data.uptime / 3600)}時間${Math.floor((data.uptime % 3600) / 60)}分`;
+                const roundStatus = data.roundActive ? `🟢 進行中 (残り ${formatTime(data.timeRemaining)})` : '🔴 インターバル';
+
+                let html = `
+                <div class="card">
+                    <h3>🔴 リアルタイムモニタリング <span style="font-size:0.8rem; color:#94a3b8;">(5秒ごと自動更新)</span></h3>
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="value">${data.players.active}/${data.players.total}</div>
+                            <div class="label">アクティブ/接続</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.mode}</div>
+                            <div class="label">現在のモード</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${uptimeStr}</div>
+                            <div class="label">稼働時間</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value" style="font-size:1rem;">${roundStatus}</div>
+                            <div class="label">ラウンド状態</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h3>🧠 メモリ使用量</h3>
+                    <div class="stat-grid">
+                        <div class="stat-box" style="grid-column: span 2;">
+                            <div class="value" style="color: ${data.memory.systemUsagePercent > 80 ? '#ef4444' : data.memory.systemUsagePercent > 60 ? '#eab308' : '#22c55e'}; font-size: 2rem;">
+                                ${data.memory.systemUsagePercent}%
+                            </div>
+                            <div class="label">システムメモリ使用率 (${Math.round(data.memory.systemUsedMB)} / ${Math.round(data.memory.systemTotalMB)} MB)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.memory.heapUsedMB} MB</div>
+                            <div class="label">Heap Used</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.memory.heapTotalMB} MB</div>
+                            <div class="label">Heap Total</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.memory.rssMB} MB</div>
+                            <div class="label">RSS (Node.js)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${Math.round(data.memory.systemFreeMB)} MB</div>
+                            <div class="label">空きメモリ</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h3>💻 CPU負荷</h3>
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="value">${data.cpu.loadAvg1m.toFixed(2)}</div>
+                            <div class="label">Load Avg (1m)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.cpu.loadAvg5m.toFixed(2)}</div>
+                            <div class="label">Load Avg (5m)</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.cpu.loadAvg15m.toFixed(2)}</div>
+                            <div class="label">Load Avg (15m)</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h3>🗺️ ゲーム状態</h3>
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="value">${data.territories.count}</div>
+                            <div class="label">テリトリー数</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${data.territories.version}</div>
+                            <div class="label">バージョン</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${formatBytes(data.bandwidth.totalBytesSent)}</div>
+                            <div class="label">累計送信</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="value">${formatBytes(data.bandwidth.totalBytesReceived)}</div>
+                            <div class="label">累計受信</div>
+                        </div>
+                    </div>
+                </div>
+                `;
+
+                content.innerHTML = html;
+            } catch (e) {
+                if (currentTab === 'realtime') {
+                    document.getElementById('content').innerHTML = '<div class="error">接続エラー: ' + e.message + '</div>';
+                }
+            }
+        }
+
+        async function resetData() {
+            if (!confirm('【警告】\nランキングと履歴データを全て削除します（統計データは保持されます）。\n本当によろしいですか？\nこの操作は取り消せません。')) {
+                return;
+            }
+            if (!confirm('念のためもう一度聞きます。\n本当に削除しますか？')) {
+                return;
+            }
+
+            try {
+                const res = await fetch(API_BASE + '/api/admin/reset-rankings', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    alert('データがリセットされました。');
+                    loadTab(currentTab); // 現在のタブをリロード
+                } else {
+                    alert('エラー: ' + (data.error || '不明なエラー'));
+                }
+            } catch (e) {
+                alert('通信エラー: ' + e.message);
+            }
+        }
+
+        // 初期ロード
+        loadTab('stats');
+    </script>
+</body>
+
+</html>

@@ -8,13 +8,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>onj-Jintori(新鯖)</title>
-    <link rel="stylesheet" href="style.css?v=2601061732">
-    <!-- ... -->
-    <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2601061732"></script>
-    <script src="client/client-network.js?v=2601061732"></script>
-    <script src="client/client-game.js?v=2601061732"></script>
-    <script src="client/client-ui.js?v=2601061732"></script>
+    <link rel="stylesheet" href="style.css?v=2601052336">
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
 </head>
@@ -31,10 +25,148 @@
                 style="display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-bottom:15px; min-height:30px;">
             </div>
             <input type="text" id="username-input" class="login-input" placeholder="名前を入力 (任意)" maxlength="8">
-            <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字) (任意)" maxlength="3"
-                style="margin-top: 10px;">
+            <div style="display:flex; gap:5px; margin-top:10px; align-items:center;">
+                <select id="flag-select" class="login-input" style="width:70px; padding:8px 4px; font-size:1.2rem; cursor:pointer;">
+                    <option value="">🏳️</option>
+                    <option value="🇯🇵">🇯🇵</option>
+                    <option value="🇺🇸">🇺🇸</option>
+                    <option value="🇬🇧">🇬🇧</option>
+                    <option value="🇰🇷">🇰🇷</option>
+                    <option value="🇨🇳">🇨🇳</option>
+                    <option value="🇹🇼">🇹🇼</option>
+                    <option value="🇩🇪">🇩🇪</option>
+                    <option value="🇫🇷">🇫🇷</option>
+                    <option value="🇮🇹">🇮🇹</option>
+                    <option value="🇪🇸">🇪🇸</option>
+                    <option value="🇧🇷">🇧🇷</option>
+                    <option value="🇷🇺">🇷🇺</option>
+                    <option value="🇮🇳">🇮🇳</option>
+                    <option value="🇦🇺">🇦🇺</option>
+                    <option value="🇨🇦">🇨🇦</option>
+                    <option value="🇲🇽">🇲🇽</option>
+                    <option value="🇸🇦">🇸🇦</option>
+                    <option value="🇹🇭">🇹🇭</option>
+                    <option value="🇻🇳">🇻🇳</option>
+                    <option value="🇵🇭">🇵🇭</option>
+                    <option value="🇺🇦">🇺🇦</option>
+                    <option value="🇵🇱">🇵🇱</option>
+                    <option value="🇳🇱">🇳🇱</option>
+                    <option value="🇧🇪">🇧🇪</option>
+                    <option value="🇨🇭">🇨🇭</option>
+                    <option value="🇦🇹">🇦🇹</option>
+                    <option value="🇸🇪">🇸🇪</option>
+                    <option value="🇳🇴">🇳🇴</option>
+                    <option value="🇩🇰">🇩🇰</option>
+                    <option value="🇫🇮">🇫🇮</option>
+                    <option value="🇮🇪">🇮🇪</option>
+                    <option value="🇵🇹">🇵🇹</option>
+                    <option value="🇬🇷">🇬🇷</option>
+                    <option value="🇹🇷">🇹🇷</option>
+                    <option value="🇮🇱">🇮🇱</option>
+                    <option value="🇦🇪">🇦🇪</option>
+                    <option value="🇪🇬">🇪🇬</option>
+                    <option value="🇿🇦">🇿🇦</option>
+                    <option value="🇳🇬">🇳🇬</option>
+                    <option value="🇰🇪">🇰🇪</option>
+                    <option value="🇲🇦">🇲🇦</option>
+                    <option value="🇦🇷">🇦🇷</option>
+                    <option value="🇨🇱">🇨🇱</option>
+                    <option value="🇨🇴">🇨🇴</option>
+                    <option value="🇵🇪">🇵🇪</option>
+                    <option value="🇻🇪">🇻🇪</option>
+                    <option value="🇮🇩">🇮🇩</option>
+                    <option value="🇲🇾">🇲🇾</option>
+                    <option value="🇸🇬">🇸🇬</option>
+                    <option value="🇭🇰">🇭🇰</option>
+                    <option value="🇲🇴">🇲🇴</option>
+                    <option value="🇳🇿">🇳🇿</option>
+                    <option value="🇵🇰">🇵🇰</option>
+                    <option value="🇧🇩">🇧🇩</option>
+                    <option value="🇱🇰">🇱🇰</option>
+                    <option value="🇳🇵">🇳🇵</option>
+                    <option value="🇲🇲">🇲🇲</option>
+                    <option value="🇰🇭">🇰🇭</option>
+                    <option value="🇱🇦">🇱🇦</option>
+                    <option value="🇲🇳">🇲🇳</option>
+                    <option value="🇰🇵">🇰🇵</option>
+                    <option value="🇨🇿">🇨🇿</option>
+                    <option value="🇭🇺">🇭🇺</option>
+                    <option value="🇷🇴">🇷🇴</option>
+                    <option value="🇧🇬">🇧🇬</option>
+                    <option value="🇭🇷">🇭🇷</option>
+                    <option value="🇷🇸">🇷🇸</option>
+                    <option value="🇸🇰">🇸🇰</option>
+                    <option value="🇸🇮">🇸🇮</option>
+                    <option value="🇧🇦">🇧🇦</option>
+                    <option value="🇲🇰">🇲🇰</option>
+                    <option value="🇦🇱">🇦🇱</option>
+                    <option value="🇽🇰">🇽🇰</option>
+                    <option value="🇲🇪">🇲🇪</option>
+                    <option value="🇪🇪">🇪🇪</option>
+                    <option value="🇱🇻">🇱🇻</option>
+                    <option value="🇱🇹">🇱🇹</option>
+                    <option value="🇧🇾">🇧🇾</option>
+                    <option value="🇲🇩">🇲🇩</option>
+                    <option value="🇬🇪">🇬🇪</option>
+                    <option value="🇦🇲">🇦🇲</option>
+                    <option value="🇦🇿">🇦🇿</option>
+                    <option value="🇰🇿">🇰🇿</option>
+                    <option value="🇺🇿">🇺🇿</option>
+                    <option value="🇹🇲">🇹🇲</option>
+                    <option value="🇰🇬">🇰🇬</option>
+                    <option value="🇹🇯">🇹🇯</option>
+                    <option value="🇦🇫">🇦🇫</option>
+                    <option value="🇮🇶">🇮🇶</option>
+                    <option value="🇮🇷">🇮🇷</option>
+                    <option value="🇸🇾">🇸🇾</option>
+                    <option value="🇯🇴">🇯🇴</option>
+                    <option value="🇱🇧">🇱🇧</option>
+                    <option value="🇶🇦">🇶🇦</option>
+                    <option value="🇰🇼">🇰🇼</option>
+                    <option value="🇧🇭">🇧🇭</option>
+                    <option value="🇴🇲">🇴🇲</option>
+                    <option value="🇾🇪">🇾🇪</option>
+                    <option value="🇨🇺">🇨🇺</option>
+                    <option value="🇯🇲">🇯🇲</option>
+                    <option value="🇭🇹">🇭🇹</option>
+                    <option value="🇩🇴">🇩🇴</option>
+                    <option value="🇵🇷">🇵🇷</option>
+                    <option value="🇵🇦">🇵🇦</option>
+                    <option value="🇨🇷">🇨🇷</option>
+                    <option value="🇬🇹">🇬🇹</option>
+                    <option value="🇭🇳">🇭🇳</option>
+                    <option value="🇸🇻">🇸🇻</option>
+                    <option value="🇳🇮">🇳🇮</option>
+                    <option value="🇪🇨">🇪🇨</option>
+                    <option value="🇧🇴">🇧🇴</option>
+                    <option value="🇵🇾">🇵🇾</option>
+                    <option value="🇺🇾">🇺🇾</option>
+                    <option value="🇬🇾">🇬🇾</option>
+                    <option value="🇸🇷">🇸🇷</option>
+                    <option value="🇹🇹">🇹🇹</option>
+                    <option value="🇧🇸">🇧🇸</option>
+                    <option value="🇧🇧">🇧🇧</option>
+                    <option value="🇱🇨">🇱🇨</option>
+                    <option value="🇬🇩">🇬🇩</option>
+                    <option value="🇻🇨">🇻🇨</option>
+                    <option value="🇩🇲">🇩🇲</option>
+                    <option value="🇦🇬">🇦🇬</option>
+                    <option value="🇰🇳">🇰🇳</option>
+                    <option value="🇧🇿">🇧🇿</option>
+                    <option value="🇮🇸">🇮🇸</option>
+                    <option value="🇱🇺">🇱🇺</option>
+                    <option value="🇲🇨">🇲🇨</option>
+                    <option value="🇱🇮">🇱🇮</option>
+                    <option value="🇦🇩">🇦🇩</option>
+                    <option value="🇸🇲">🇸🇲</option>
+                    <option value="🇻🇦">🇻🇦</option>
+                    <option value="🇲🇹">🇲🇹</option>
+                    <option value="🇨🇾">🇨🇾</option>
+                </select>
+                <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字)" maxlength="3" style="flex:1;">
+            </div>
             <select id="team-select" class="login-input" style="margin-top: 10px; display:none; cursor:pointer;"
-                onchange="if(this.value) document.getElementById('team-input').value = this.value">
+                onchange="selectExistingTeam(this.value)">
                 <option value="">既存チームから選択</option>
             </select>
             <button class="action-btn" onclick="startGame()">ゲームスタート</button>
@@ -202,10 +334,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
     <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2601061732"></script>
-    <script src="client/client-network.js?v=2601061732"></script>
-    <script src="client/client-game.js?v=2601061732"></script>
-    <script src="client/client-ui.js?v=2601061732"></script>
+    <script src="client/client-config.js?v=2601052336"></script>
+    <script src="client/client-network.js?v=2601052336"></script>
+    <script src="client/client-game.js?v=2601052339"></script>
+    <script src="client/client-ui.js?v=2601052336"></script>
 </body>
 
 </html>
