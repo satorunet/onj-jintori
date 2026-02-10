@@ -10,21 +10,19 @@ const os = require('os');
 const crypto = require('crypto');
 
 // ============================================================
-// MySQL接続設定
+// MySQL接続設定（認証情報は server-credentials.json から読み込み）
 // ============================================================
+const SERVER_CREDENTIALS_FILE = path.join(__dirname, '..', 'server-credentials.json');
 let mysql;
 let dbPool;
 try {
+    if (!fs.existsSync(SERVER_CREDENTIALS_FILE)) {
+        throw new Error('server-credentials.json not found');
+    }
+    const creds = JSON.parse(fs.readFileSync(SERVER_CREDENTIALS_FILE, 'utf-8'));
+    if (!creds.mysql) throw new Error('mysql config missing in server-credentials.json');
     mysql = require('mysql2/promise');
-    dbPool = mysql.createPool({
-        host: 'localhost',
-        user: 'root',
-        password: '***REMOVED***',
-        database: 'jintori',
-        waitForConnections: true,
-        connectionLimit: 5,
-        queueLimit: 0
-    });
+    dbPool = mysql.createPool(creds.mysql);
     console.log('[DB] MySQL connection pool created');
 } catch (e) {
     console.log('[DB] MySQL not available, rankings will not be saved:', e.message);
@@ -84,19 +82,14 @@ const MIME_TYPES = {
 const ADMIN_CREDENTIALS_FILE = path.join(__dirname, '..', 'admin-credentials.json');
 let ADMIN_ACCOUNTS;
 try {
-    if (fs.existsSync(ADMIN_CREDENTIALS_FILE)) {
-        ADMIN_ACCOUNTS = JSON.parse(fs.readFileSync(ADMIN_CREDENTIALS_FILE, 'utf-8'));
-        console.log('[CONFIG] Admin credentials loaded from file');
-    } else {
-        ADMIN_ACCOUNTS = [
-            { username: 'admin', passwordHash: '***REMOVED_HASH***' } // default: admin
-        ];
+    if (!fs.existsSync(ADMIN_CREDENTIALS_FILE)) {
+        throw new Error('admin-credentials.json not found');
     }
+    ADMIN_ACCOUNTS = JSON.parse(fs.readFileSync(ADMIN_CREDENTIALS_FILE, 'utf-8'));
+    console.log('[CONFIG] Admin credentials loaded from file');
 } catch (e) {
-    console.error('[CONFIG] Failed to load admin credentials file:', e.message);
-    ADMIN_ACCOUNTS = [
-        { username: 'admin', passwordHash: '***REMOVED_HASH***' } // default: admin
-    ];
+    console.error('[CONFIG] Admin credentials not available:', e.message);
+    ADMIN_ACCOUNTS = [];
 }
 const ADMIN_SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
 
