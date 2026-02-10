@@ -5,6 +5,7 @@
 
 const config = require('./config');
 const { fs, path, os, dbPool, PUBLIC_HTML_DIR, MIME_TYPES, GAME_MODES, state, bandwidthStats } = config;
+const adminAuth = require('./admin-auth');
 
 /**
  * CORS設定を適用
@@ -20,6 +21,25 @@ function setCorsHeaders(req, res) {
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+}
+
+/**
+ * リクエストボディを読み取る
+ */
+function readBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; if (body.length > 1e5) reject(new Error('Body too large')); });
+        req.on('end', () => resolve(body));
+        req.on('error', reject);
+    });
+}
+
+/**
+ * クライアントIPを取得
+ */
+function getClientIP(req) {
+    return req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
 }
 
 /**
@@ -214,9 +234,15 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
-        // API: サーバー負荷統計 (DB依存)
+        // API: サーバー負荷統計 (DB依存・認証必須)
         // ========================================
         if (urlPath === '/api/server-stats') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
             if (!dbPool) {
                 res.writeHead(503);
                 res.end(JSON.stringify({ error: 'Database not available' }));
@@ -254,9 +280,15 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
-        // API: リアルタイムサーバー状態 (DB不要)
+        // API: リアルタイムサーバー状態 (DB不要・認証必須)
         // ========================================
         if (urlPath === '/api/server-realtime') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
             const memUsage = process.memoryUsage();
             const uptime = process.uptime();
             const playerCount = Object.keys(state.players).length;
@@ -311,9 +343,70 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
-        // API: 管理者用 ランキングリセット
+        // API: 管理者ログイン
+        // ========================================
+        if (urlPath === '/api/admin/login' && req.method === 'POST') {
+            try {
+                const body = await readBody(req);
+                const { username, password } = JSON.parse(body);
+                const ip = getClientIP(req);
+
+                if (adminAuth.isLocked(ip)) {
+                    res.writeHead(429);
+                    res.end(JSON.stringify({ error: 'Too many attempts. Try again later.' }));
+                    return;
+                }
+
+                const sessionId = adminAuth.login(username || '', password || '', ip);
+                if (sessionId) {
+                    res.setHeader('Set-Cookie', `admin_session=${sessionId}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`);
+                    res.writeHead(200);
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(401);
+                    res.end(JSON.stringify({ error: 'Invalid credentials' }));
+                }
+            } catch (err) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Bad request' }));
+            }
+            return;
+        }
+
+        // ========================================
+        // API: 管理者ログアウト
+        // ========================================
+        if (urlPath === '/api/admin/logout' && req.method === 'POST') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            adminAuth.logout(sessionId);
+            res.setHeader('Set-Cookie', 'admin_session=; HttpOnly; Path=/; Max-Age=0');
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true }));
+            return;
+        }
+
+        // ========================================
+        // API: セッション確認
+        // ========================================
+        if (urlPath === '/api/admin/check-session') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            const valid = adminAuth.validateSession(sessionId);
+            res.writeHead(200);
+            res.end(JSON.stringify({ authenticated: valid }));
+            return;
+        }
+
+        // ========================================
+        // API: 管理者用 ランキングリセット (認証必須)
         // ========================================
         if (urlPath === '/api/admin/reset-rankings' && req.method === 'POST') {
+            // 認証チェック
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
             if (!dbPool) {
                 res.writeHead(503);
                 res.end(JSON.stringify({ error: 'Database not available' }));
@@ -342,11 +435,39 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
+        // API: 管理者パスワード変更 (認証必須)
+        // ========================================
+        if (urlPath === '/api/admin/change-password' && req.method === 'POST') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
+            try {
+                const body = await readBody(req);
+                const { currentPassword, newPassword } = JSON.parse(body);
+                const result = adminAuth.changePassword(sessionId, currentPassword || '', newPassword || '');
+                if (result.success) {
+                    res.writeHead(200);
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ success: false, error: result.error }));
+                }
+            } catch (err) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Bad request' }));
+            }
+            return;
+        }
+
+        // ========================================
         // 静的ファイル配信
         // ========================================
         if (fs.existsSync(PUBLIC_HTML_DIR)) {
             let filePath = path.join(PUBLIC_HTML_DIR, urlPath === '/' ? 'index.html' : urlPath);
-            
+
             // セキュリティ: ディレクトリトラバーサル防止
             const realPath = path.resolve(filePath);
             if (!realPath.startsWith(PUBLIC_HTML_DIR)) {
@@ -354,16 +475,27 @@ async function handleHttpRequest(req, res) {
                 res.end('Forbidden');
                 return;
             }
-            
+
+            // admin.html アクセス時の認証チェック
+            if (urlPath === '/admin.html' || urlPath === '/admin') {
+                const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+                if (!adminAuth.validateSession(sessionId)) {
+                    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                    res.writeHead(302, { 'Location': '/admin-login.html' });
+                    res.end();
+                    return;
+                }
+            }
+
             // ディレクトリの場合は index.html を探す
             if (fs.existsSync(realPath) && fs.statSync(realPath).isDirectory()) {
                 filePath = path.join(realPath, 'index.html');
             }
-            
+
             if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                 const ext = path.extname(filePath).toLowerCase();
                 const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
-                
+
                 try {
                     const content = fs.readFileSync(filePath);
                     res.setHeader('Content-Type', mimeType);

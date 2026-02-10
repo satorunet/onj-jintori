@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 // ============================================================
 // MySQL接続設定
@@ -75,6 +76,29 @@ const MIME_TYPES = {
     '.webm': 'video/webm',
     '.webp': 'image/webp'
 };
+
+// ============================================================
+// 管理者アカウント設定
+// ============================================================
+// パスワードハッシュ生成: echo -n 'パスワード' | sha256sum
+const ADMIN_CREDENTIALS_FILE = path.join(__dirname, '..', 'admin-credentials.json');
+let ADMIN_ACCOUNTS;
+try {
+    if (fs.existsSync(ADMIN_CREDENTIALS_FILE)) {
+        ADMIN_ACCOUNTS = JSON.parse(fs.readFileSync(ADMIN_CREDENTIALS_FILE, 'utf-8'));
+        console.log('[CONFIG] Admin credentials loaded from file');
+    } else {
+        ADMIN_ACCOUNTS = [
+            { username: 'admin', passwordHash: '***REMOVED_HASH***' } // default: admin
+        ];
+    }
+} catch (e) {
+    console.error('[CONFIG] Failed to load admin credentials file:', e.message);
+    ADMIN_ACCOUNTS = [
+        { username: 'admin', passwordHash: '***REMOVED_HASH***' } // default: admin
+    ];
+}
+const ADMIN_SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
 
 // ============================================================
 // ゲーム設定・定数
@@ -242,6 +266,7 @@ module.exports = {
     fs,
     path,
     os,
+    crypto,
     dbPool,
 
     // 定数
@@ -265,6 +290,11 @@ module.exports = {
     EMOJIS,
     GAME_MODES,
     TEAM_COLORS,
+
+    // 管理者設定
+    ADMIN_ACCOUNTS,
+    ADMIN_CREDENTIALS_FILE,
+    ADMIN_SESSION_TTL,
 
     // モード
     DEBUG_MODE,

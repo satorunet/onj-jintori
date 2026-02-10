@@ -136,7 +136,10 @@
 </head>
 
 <body>
-    <h1>🎮 Jintori 管理画面</h1>
+    <div style="display:flex; justify-content:center; align-items:center; gap:20px; margin-bottom:20px;">
+        <h1 style="margin-bottom:0;">🎮 Jintori 管理画面</h1>
+        <button onclick="adminLogout()" style="padding:8px 16px; border:none; border-radius:8px; background:#ef4444; color:white; cursor:pointer; font-family:inherit; font-size:0.85rem;">ログアウト</button>
+    </div>
 
     <div class="tabs">
         <button class="tab-btn" onclick="loadTab('realtime')">🔴 リアルタイム</button>
@@ -144,6 +147,7 @@
         <button class="tab-btn" onclick="loadTab('rounds')">🏆 ラウンド履歴</button>
         <button class="tab-btn" onclick="loadTab('players')">👤 プレイヤー統計</button>
         <button class="tab-btn" onclick="loadTab('teams')">🏅 チーム統計</button>
+        <button class="tab-btn" onclick="loadTab('settings')">⚙️ 設定</button>
         <button class="tab-btn" style="background:#ef4444;" onclick="resetData()">⚠️ データリセット</button>
     </div>
 
@@ -184,11 +188,17 @@
             }
 
             document.querySelectorAll('.tab-btn').forEach((btn, i) => {
-                btn.classList.toggle('active', ['realtime', 'stats', 'rounds', 'players', 'teams'][i] === tab);
+                btn.classList.toggle('active', ['realtime', 'stats', 'rounds', 'players', 'teams', 'settings'][i] === tab);
             });
 
             const content = document.getElementById('content');
             content.innerHTML = '<div class="loading">読み込み中...</div>';
+
+            // 認証エラーハンドラ
+            function authCheck(res) {
+                if (res.status === 401) { window.location.href = '/admin-login.html'; return false; }
+                return true;
+            }
 
             try {
                 if (tab === 'realtime') {
@@ -198,6 +208,7 @@
 
                 } else if (tab === 'stats') {
                     const res = await fetch(API_BASE + '/api/server-stats', { credentials: 'include' });
+                    if (!authCheck(res)) return;
                     const data = await res.json();
 
                     let html = '<div class="card"><h3>最近のラウンド統計</h3>';
@@ -240,6 +251,7 @@
 
                 } else if (tab === 'rounds') {
                     const res = await fetch(API_BASE + '/api/rounds', { credentials: 'include' });
+                    if (!authCheck(res)) return;
                     const data = await res.json();
                     let html = '<div class="card"><h3>最近のラウンド</h3>';
                     html += '<table><thead><tr><th>日時</th><th>モード</th><th>人数</th><th>優勝者</th><th>スコア</th></tr></thead><tbody>';
@@ -252,6 +264,7 @@
 
                 } else if (tab === 'players') {
                     const res = await fetch(API_BASE + '/api/player-stats', { credentials: 'include' });
+                    if (!authCheck(res)) return;
                     const data = await res.json();
                     let html = '<div class="card"><h3>プレイヤー累計統計</h3>';
                     html += '<table><thead><tr><th>#</th><th>名前</th><th>試合数</th><th>1位</th><th>累計スコア</th><th>キル</th><th>平均</th><th>最高</th></tr></thead><tbody>';
@@ -263,6 +276,7 @@
 
                 } else if (tab === 'teams') {
                     const res = await fetch(API_BASE + '/api/team-stats', { credentials: 'include' });
+                    if (!authCheck(res)) return;
                     const data = await res.json();
                     let html = '<div class="card"><h3>チーム累計統計</h3>';
                     html += '<table><thead><tr><th>#</th><th>チーム</th><th>試合数</th><th>1位</th><th>累計スコア</th><th>キル</th><th>平均</th><th>最高</th></tr></thead><tbody>';
@@ -271,6 +285,75 @@
                     });
                     html += '</tbody></table></div>';
                     content.innerHTML = html;
+
+                } else if (tab === 'settings') {
+                    content.innerHTML = `
+                    <div class="card">
+                        <h3>パスワード変更</h3>
+                        <div id="pw-msg" style="padding:10px; border-radius:8px; margin-bottom:15px; display:none;"></div>
+                        <form id="changePwForm" style="max-width:400px;">
+                            <div style="margin-bottom:15px;">
+                                <label style="display:block; margin-bottom:6px; color:#94a3b8; font-size:0.9rem;">現在のパスワード</label>
+                                <input type="password" id="currentPw" required autocomplete="current-password"
+                                    style="width:100%; padding:10px; border:1px solid #475569; border-radius:8px; background:#1e293b; color:#f1f5f9; font-family:inherit; font-size:1rem; outline:none;">
+                            </div>
+                            <div style="margin-bottom:15px;">
+                                <label style="display:block; margin-bottom:6px; color:#94a3b8; font-size:0.9rem;">新しいパスワード</label>
+                                <input type="password" id="newPw" required minlength="4" autocomplete="new-password"
+                                    style="width:100%; padding:10px; border:1px solid #475569; border-radius:8px; background:#1e293b; color:#f1f5f9; font-family:inherit; font-size:1rem; outline:none;">
+                            </div>
+                            <div style="margin-bottom:20px;">
+                                <label style="display:block; margin-bottom:6px; color:#94a3b8; font-size:0.9rem;">新しいパスワード（確認）</label>
+                                <input type="password" id="confirmPw" required minlength="4" autocomplete="new-password"
+                                    style="width:100%; padding:10px; border:1px solid #475569; border-radius:8px; background:#1e293b; color:#f1f5f9; font-family:inherit; font-size:1rem; outline:none;">
+                            </div>
+                            <button type="submit" style="padding:10px 24px; border:none; border-radius:8px; background:var(--accent); color:white; cursor:pointer; font-family:inherit; font-size:1rem;">変更する</button>
+                        </form>
+                    </div>`;
+
+                    document.getElementById('changePwForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const msgEl = document.getElementById('pw-msg');
+                        const newPw = document.getElementById('newPw').value;
+                        const confirmPw = document.getElementById('confirmPw').value;
+
+                        if (newPw !== confirmPw) {
+                            msgEl.style.display = 'block';
+                            msgEl.style.background = '#dc2626';
+                            msgEl.style.color = 'white';
+                            msgEl.textContent = '新しいパスワードが一致しません';
+                            return;
+                        }
+
+                        try {
+                            const res = await fetch(API_BASE + '/api/admin/change-password', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({
+                                    currentPassword: document.getElementById('currentPw').value,
+                                    newPassword: newPw
+                                })
+                            });
+                            const data = await res.json();
+                            msgEl.style.display = 'block';
+                            if (data.success) {
+                                msgEl.style.background = '#16a34a';
+                                msgEl.style.color = 'white';
+                                msgEl.textContent = 'パスワードを変更しました';
+                                document.getElementById('changePwForm').reset();
+                            } else {
+                                msgEl.style.background = '#dc2626';
+                                msgEl.style.color = 'white';
+                                msgEl.textContent = data.error || 'エラーが発生しました';
+                            }
+                        } catch (err) {
+                            msgEl.style.display = 'block';
+                            msgEl.style.background = '#dc2626';
+                            msgEl.style.color = 'white';
+                            msgEl.textContent = '通信エラー: ' + err.message;
+                        }
+                    });
                 }
             } catch (e) {
                 content.innerHTML = '<div class="error">読み込みエラー: ' + e.message + '</div>';
@@ -280,6 +363,7 @@
         async function loadRealtime() {
             try {
                 const res = await fetch(API_BASE + '/api/server-realtime', { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/admin-login.html'; return; }
                 const data = await res.json();
                 const content = document.getElementById('content');
 
@@ -395,11 +479,12 @@
             }
 
             try {
-                const res = await fetch(API_BASE + '/api/admin/reset-rankings', { method: 'POST' });
+                const res = await fetch(API_BASE + '/api/admin/reset-rankings', { method: 'POST', credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/admin-login.html'; return; }
                 const data = await res.json();
                 if (data.success) {
                     alert('データがリセットされました。');
-                    loadTab(currentTab); // 現在のタブをリロード
+                    loadTab(currentTab);
                 } else {
                     alert('エラー: ' + (data.error || '不明なエラー'));
                 }
@@ -408,8 +493,31 @@
             }
         }
 
-        // 初期ロード
-        loadTab('stats');
+        async function adminLogout() {
+            try {
+                await fetch(API_BASE + '/api/admin/logout', { method: 'POST', credentials: 'include' });
+            } catch (e) {}
+            window.location.href = '/admin-login.html';
+        }
+
+        // セッション確認 → 未認証ならログインページへ
+        async function checkAuth() {
+            try {
+                const res = await fetch(API_BASE + '/api/admin/check-session', { credentials: 'include' });
+                const data = await res.json();
+                if (!data.authenticated) {
+                    window.location.href = '/admin-login.html';
+                    return false;
+                }
+                return true;
+            } catch (e) {
+                window.location.href = '/admin-login.html';
+                return false;
+            }
+        }
+
+        // 初期ロード（認証チェック後）
+        checkAuth().then(ok => { if (ok) loadTab('stats'); });
     </script>
 </body>
 
