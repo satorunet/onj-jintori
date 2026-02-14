@@ -1295,7 +1295,9 @@ function spawnNicoComment(text, color, name) {
     layer.appendChild(container);
 
     requestAnimationFrame(() => {
-        container.style.transform = 'translateX(-' + (window.innerWidth + container.offsetWidth + 100) + 'px)';
+        const gameContainer = document.getElementById('game-container');
+        const containerW = gameContainer ? gameContainer.clientWidth : window.innerWidth;
+        container.style.transform = 'translateX(-' + (containerW + container.offsetWidth + 100) + 'px)';
     });
 
     setTimeout(() => {

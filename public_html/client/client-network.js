@@ -45,9 +45,11 @@ function connect() {
             console.log('[Bot Auth] Authentication required');
             showBotAuthDialog(data.captchaImage, data.message);
         } else if (data.type === 'bot_auth_success') {
-            // 認証成功
+            // 認証成功 - サーバー側で自動joinされるのでゲーム開始状態にする
             console.log('[Bot Auth] Authentication successful');
             hideBotAuthDialog();
+            document.getElementById('login-modal').style.display = 'none';
+            isGameReady = true;
         } else if (data.type === 'bot_auth_failed') {
             // 認証失敗 - 新しいチャレンジ画像を表示
             console.log('[Bot Auth] Authentication failed:', data.message);
@@ -574,6 +576,9 @@ function connect() {
         if (e.code === 4000) {
             // AFK切断時は独自のモーダルを表示
             showAfkDisconnectNotice();
+        } else if (e.code === 4010) {
+            // 画面サイズ超過でキック
+            alert('画面サイズが大きすぎます。\nスマートフォン、またはブラウザのウィンドウを小さくしてアクセスしてください。');
         }
         document.getElementById('login-modal').style.display = 'flex';
         document.getElementById('deathScreen').style.display = 'none';
@@ -591,10 +596,12 @@ let lastSentViewport = { w: 0, h: 0 };
 
 function sendViewportSize() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    
-    const w = Math.round(window.innerWidth);
-    const h = Math.round(window.innerHeight);
-    
+
+    // 実際の画面サイズを送信（サーバー側で制限判定）
+    const container = document.getElementById('game-container');
+    const w = Math.round(container ? container.clientWidth : window.innerWidth);
+    const h = Math.round(container ? container.clientHeight : window.innerHeight);
+
     // 変化がある場合のみ送信（100px以上の変化）
     if (Math.abs(w - lastSentViewport.w) > 100 || Math.abs(h - lastSentViewport.h) > 100) {
         socket.send(JSON.stringify({ type: 'viewport', w: w, h: h }));

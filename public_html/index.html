@@ -14,6 +14,7 @@
 </head>
 
 <body>
+<div id="game-container">
     <canvas id="gameCanvas"></canvas>
 
     <!-- Login Modal -->
@@ -145,7 +146,7 @@
     <!-- 次のラウンドカウントダウン（画面上部固定） -->
     <div id="next-round-countdown" style="
         display: none;
-        position: fixed;
+        position: absolute;
         top: 0;
         left: 0;
         right: 0;
@@ -274,13 +275,15 @@
     </div>
 
     <div id="nico-layer"
-        style="position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; overflow:hidden;">
+        style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; overflow:hidden;">
     </div>
 
     <!-- Virtual Joystick Visuals -->
     <div id="virtual-joystick-base">
         <div id="virtual-joystick-stick"></div>
     </div>
+
+</div><!-- /game-container -->
 
     <!-- pako library for gzip decompression -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>

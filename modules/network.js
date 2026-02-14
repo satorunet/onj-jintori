@@ -69,52 +69,41 @@ function setupConnectionHandler() {
             pendingAuth: requiresAuth  // 認証待ちフラグ
         };
 
-        // Bot認証が必要な場合
         if (requiresAuth) {
             const cfInfo = req.headers['cf-ipcountry'] ? ` [CF: ${req.headers['cf-ipcountry']}, Ray: ${req.headers['cf-ray']}]` : '';
-            console.log(`[BOT-AUTH] Requiring authentication for IP: ${ip}${cfInfo}`);
-            const captchaImage = botAuth.createChallenge(id);
-            
-            ws.send(JSON.stringify({
-                type: 'bot_auth_required',
-                message: '無操作タイムアウト後の再接続のため、認証が必要です',
-                captchaImage: captchaImage
-            }));
-            
-            // 認証が必要な場合は初期データを送信しない（認証後に送信）
-            // メッセージハンドラは設定するため、returnしない
-        } else {
-            // 初期データ送信（認証不要の場合のみ）
-            ws.send(JSON.stringify({
-                type: 'init', id, color, emoji,
-                world: { width: state.WORLD_WIDTH, height: state.WORLD_HEIGHT },
-                mode: GAME_MODES[state.currentModeIdx],
-                obstacles: state.obstacles,
-                tf: state.territoryRects,
-                tv: state.territoryVersion,
-                teams: game.getTeamStats(),
-                pc: Object.keys(state.players).length
-            }));
+            console.log(`[BOT-AUTH] Auth required for IP: ${ip}${cfInfo} (will challenge on join)`);
+        }
 
-            // 既存プレイヤーのマスタ情報送信
-            const existingPlayers = Object.values(state.players)
-                .filter(p => p.id !== id && p.name)
-                .map(p => ({ i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }));
-            if (existingPlayers.length > 0) {
-                ws.send(JSON.stringify({ type: 'pm', players: existingPlayers }));
-            }
+        // 初期データは常に送信（認証待ちでもログイン画面・ユーザー数は表示する）
+        ws.send(JSON.stringify({
+            type: 'init', id, color, emoji,
+            world: { width: state.WORLD_WIDTH, height: state.WORLD_HEIGHT },
+            mode: GAME_MODES[state.currentModeIdx],
+            obstacles: state.obstacles,
+            tf: state.territoryRects,
+            tv: state.territoryVersion,
+            teams: game.getTeamStats(),
+            pc: Object.keys(state.players).length
+        }));
 
-            if (!state.roundActive && state.lastResultMsg) {
-                // 残り時間を再計算
-                const now = Date.now();
-                const timeLeft = state.nextRoundStartTime ? Math.max(0, Math.ceil((state.nextRoundStartTime - now) / 1000)) : 15;
-                
-                const updatedMsg = {
-                    ...state.lastResultMsg,
-                    secondsUntilNext: timeLeft
-                };
-                ws.send(JSON.stringify(updatedMsg));
-            }
+        // 既存プレイヤーのマスタ情報送信
+        const existingPlayers = Object.values(state.players)
+            .filter(p => p.id !== id && p.name)
+            .map(p => ({ i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }));
+        if (existingPlayers.length > 0) {
+            ws.send(JSON.stringify({ type: 'pm', players: existingPlayers }));
+        }
+
+        if (!state.roundActive && state.lastResultMsg) {
+            // 残り時間を再計算
+            const now = Date.now();
+            const timeLeft = state.nextRoundStartTime ? Math.max(0, Math.ceil((state.nextRoundStartTime - now) / 1000)) : 15;
+
+            const updatedMsg = {
+                ...state.lastResultMsg,
+                secondsUntilNext: timeLeft
+            };
+            ws.send(JSON.stringify(updatedMsg));
         }
 
         ws.on('message', msg => {
@@ -196,48 +185,22 @@ async function handleJsonMessage(data, p, id, byteLen) {
         if (result.success) {
             const cfInfo = p.cfCountry ? ` [CF: ${p.cfCountry}, Ray: ${p.cfRay}]` : '';
             console.log(`[BOT-AUTH] Authentication successful for ${id} (IP: ${p.ip}${cfInfo})`);
-            
+
             // 認証成功：フラグをクリアしてIPアドレスの記録を削除
             p.pendingAuth = false;
             await botAuth.clearAfkTimeout(p.ip);
-            
-            // 初期データを送信
-            p.ws.send(JSON.stringify({
-                type: 'init', id, 
-                color: p.color, 
-                emoji: p.emoji,
-                world: { width: state.WORLD_WIDTH, height: state.WORLD_HEIGHT },
-                mode: GAME_MODES[state.currentModeIdx],
-                obstacles: state.obstacles,
-                tf: state.territoryRects,
-                tv: state.territoryVersion,
-                teams: game.getTeamStats(),
-                pc: Object.keys(state.players).length
-            }));
-            
-            // 既存プレイヤーのマスタ情報送信
-            const existingPlayers = Object.values(state.players)
-                .filter(ep => ep.id !== id && ep.name)
-                .map(ep => ({ i: ep.id, n: ep.name, c: ep.color, e: ep.emoji, t: ep.team || '' }));
-            if (existingPlayers.length > 0) {
-                p.ws.send(JSON.stringify({ type: 'pm', players: existingPlayers }));
-            }
-            
-            // ラウンド終了時のメッセージ
-            if (!state.roundActive && state.lastResultMsg) {
-                const now = Date.now();
-                const timeLeft = state.nextRoundStartTime ? Math.max(0, Math.ceil((state.nextRoundStartTime - now) / 1000)) : 15;
-                const updatedMsg = {
-                    ...state.lastResultMsg,
-                    secondsUntilNext: timeLeft
-                };
-                p.ws.send(JSON.stringify(updatedMsg));
-            }
-            
+
             p.ws.send(JSON.stringify({
                 type: 'bot_auth_success',
                 message: '認証に成功しました'
             }));
+
+            // 保存されたjoinデータがあれば自動的にjoin処理を実行
+            if (p.pendingJoinData) {
+                const joinData = p.pendingJoinData;
+                delete p.pendingJoinData;
+                handleJsonMessage({ type: 'join', name: joinData.name, team: joinData.team }, p, id, 0);
+            }
         } else {
             console.log(`[BOT-AUTH] Authentication failed for ${id}: ${result.reason}`);
             
@@ -260,12 +223,24 @@ async function handleJsonMessage(data, p, id, byteLen) {
         return;
     }
     
-    // 認証待ちの場合は他のメッセージを処理しない
-    if (p.pendingAuth) {
+    // 認証待ちの場合は join と bot_auth_response 以外を処理しない
+    if (p.pendingAuth && data.type !== 'join') {
         return;
     }
-    
+
     if (data.type === 'join') {
+        // Bot認証が必要な場合: joinデータを保存してチャレンジを送信
+        if (p.pendingAuth) {
+            p.pendingJoinData = { name: data.name, team: data.team };
+            const captchaImage = botAuth.createChallenge(id);
+            console.log(`[BOT-AUTH] Sending challenge to ${id} on join attempt`);
+            p.ws.send(JSON.stringify({
+                type: 'bot_auth_required',
+                message: '無操作タイムアウト後の再接続のため、認証が必要です',
+                captchaImage: captchaImage
+            }));
+            return;
+        }
         bandwidthStats.received.join += byteLen;
         
         // ============================================================
@@ -378,17 +353,27 @@ async function handleJsonMessage(data, p, id, byteLen) {
         // 画面サイズ（AOI最適化用）
         const w = parseInt(data.w) || 0;
         const h = parseInt(data.h) || 0;
-        
-        // バリデーション（妥当な範囲: 100-4000px）
-        if (w >= 100 && w <= 4000 && h >= 100 && h <= 4000) {
+
+        // スマホ上限を超えている場合はキック（CSS改変対策）
+        const MAX_VIEWPORT_W = 540;
+        const MAX_VIEWPORT_H = 1020;
+        if (w > MAX_VIEWPORT_W || h > MAX_VIEWPORT_H) {
+            console.log(`[KICK] ${p.name || id} (IP: ${p.ip}): Screen too large ${w}x${h} (max ${MAX_VIEWPORT_W}x${MAX_VIEWPORT_H})`);
+            if (p.ws.readyState === WebSocket.OPEN) {
+                p.ws.close(4010, 'Screen size too large');
+            }
+            return;
+        }
+
+        // バリデーション（妥当な範囲: 100px以上）
+        if (w >= 100 && h >= 100) {
             p.viewportWidth = w;
             p.viewportHeight = h;
-            
+
             // 四角形AOI: 半幅・半高 + マージン200px
-            // 上限: 2500px（従来の制限）
             p.aoiHalfWidth = Math.min(2500, Math.round(w * 0.6 + 200));
             p.aoiHalfHeight = Math.min(2500, Math.round(h * 0.6 + 200));
-            
+
             console.log(`[VIEWPORT] ${p.name || id}: ${w}x${h} → AOI: ${p.aoiHalfWidth}x${p.aoiHalfHeight}px`);
         }
     } else if (data.type === 'chat') {
@@ -524,9 +509,9 @@ function startBroadcastLoop() {
             const myY = myPlayer ? myPlayer.y : state.WORLD_HEIGHT / 2;
             
             // 四角形AOI範囲を決定
-            // デフォルト: 2500x2500px
-            let aoiHalfW = 2500;
-            let aoiHalfH = 2500;
+            // デフォルト: スマホ基準（480x920 → 488x752）
+            let aoiHalfW = 488;
+            let aoiHalfH = 752;
             
             if (myPlayer) {
                 if (myPlayer.aoiHalfWidth && myPlayer.aoiHalfHeight) {

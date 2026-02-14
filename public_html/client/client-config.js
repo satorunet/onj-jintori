@@ -167,8 +167,9 @@ function getEffectTypeFromColor(hexColor) {
 }
 
 function resize() {
-    width = canvas.width = window.innerWidth;
-    height = canvas.height = window.innerHeight;
+    const container = document.getElementById('game-container');
+    width = canvas.width = container ? container.clientWidth : window.innerWidth;
+    height = canvas.height = container ? container.clientHeight : window.innerHeight;
 }
 
 function normalizeTerritory(t) {
