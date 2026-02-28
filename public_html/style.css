@@ -5,6 +5,11 @@
             --enemy-color: #ef4444;
         }
 
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         html {
             margin: 0;
             padding: 0;

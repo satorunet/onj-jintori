@@ -29,6 +29,102 @@ function setWss(wssInstance) { wss = wssInstance; }
 // ============================================================
 // ヘルパー関数
 // ============================================================
+
+// 空間グリッド + Union-Find によるrectクラスタリング（O(N)）
+// rectList: [{x, y, w, h, ...}], mergeDistance: マージ距離
+// 戻り値: [{ totalArea, centerX, centerY }, ...]
+function clusterRectsUnionFind(rectList, mergeDistance) {
+    const n = rectList.length;
+    if (n === 0) return [];
+
+    const cellSize = mergeDistance;
+    const spatialMap = new Map();
+
+    // Step 1: 空間グリッドにバケット分類 O(N)
+    for (let i = 0; i < n; i++) {
+        const r = rectList[i];
+        const cx = Math.floor((r.x + r.w / 2) / cellSize);
+        const cy = Math.floor((r.y + r.h / 2) / cellSize);
+        const key = cy * 100000 + cx;
+        let bucket = spatialMap.get(key);
+        if (!bucket) { bucket = []; spatialMap.set(key, bucket); }
+        bucket.push(i);
+    }
+
+    // Step 2: Union-Find
+    const parent = new Int32Array(n);
+    const rank = new Uint8Array(n);
+    const area = new Float64Array(n);
+    const sumX = new Float64Array(n);
+    const sumY = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        parent[i] = i;
+        const r = rectList[i];
+        const a = r.w * r.h;
+        area[i] = a;
+        sumX[i] = (r.x + r.w / 2) * a;
+        sumY[i] = (r.y + r.h / 2) * a;
+    }
+    function find(x) {
+        while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    }
+    function union(a, b) {
+        a = find(a); b = find(b);
+        if (a === b) return;
+        if (rank[a] < rank[b]) { const t = a; a = b; b = t; }
+        parent[b] = a;
+        if (rank[a] === rank[b]) rank[a]++;
+        area[a] += area[b];
+        sumX[a] += sumX[b];
+        sumY[a] += sumY[b];
+    }
+
+    // Step 3: 同一セル内・隣接セル間でマージ O(N * k)
+    const distSq = mergeDistance * mergeDistance;
+    const neighborOffsets = [0, 1, -1, 100000, -100000, 100001, 99999, -99999, -100001];
+    spatialMap.forEach((indices, key) => {
+        // 同一セル内は全ペアをマージ
+        for (let a = 0; a < indices.length; a++) {
+            for (let b = a + 1; b < indices.length; b++) {
+                union(indices[a], indices[b]);
+            }
+        }
+        // 隣接セル（右、下、右下、左下の4方向のみ = 重複なし）
+        const checkDirs = [1, 100000, 100001, 99999];
+        for (const dir of checkDirs) {
+            const neighbor = spatialMap.get(key + dir);
+            if (!neighbor) continue;
+            for (const ai of indices) {
+                const ra = rectList[ai];
+                const raCx = ra.x + ra.w / 2;
+                const raCy = ra.y + ra.h / 2;
+                for (const bi of neighbor) {
+                    const rb = rectList[bi];
+                    const dx = raCx - (rb.x + rb.w / 2);
+                    const dy = raCy - (rb.y + rb.h / 2);
+                    if (dx * dx + dy * dy < distSq) union(ai, bi);
+                }
+            }
+        }
+    });
+
+    // Step 4: クラスタ収集
+    const clusterMap = new Map();
+    for (let i = 0; i < n; i++) {
+        clusterMap.set(find(i), true);
+    }
+    const clusters = [];
+    clusterMap.forEach((_, root) => {
+        clusters.push({
+            totalArea: area[root],
+            centerX: sumX[root] / area[root],
+            centerY: sumY[root] / area[root]
+        });
+    });
+    return clusters;
+}
+
 // generateId は generateShortId のエイリアス（フルID廃止に伴い統一）
 function generateId() { return generateShortId(); }
 
@@ -394,9 +490,9 @@ function generateMinimapBitmap() {
 
     const usedPalette = {};
     usedColors.forEach(idx => { usedPalette[idx] = colors[idx]; });
-    const compressed = zlib.deflateSync(Buffer.from(bitmap), { level: 6 });
+    const compressed = zlib.deflateSync(Buffer.from(bitmap), { level: 1 });
     
-    // チーム戦モード時: 国旗位置を計算
+    // チーム戦モード時: 国旗位置を計算（Union-Findクラスタリング）
     const flags = [];
     const mode = GAME_MODES[state.currentModeIdx];
     if (mode === 'TEAM') {
@@ -412,10 +508,8 @@ function generateMinimapBitmap() {
         });
 
         const minClusterArea = (state.WORLD_WIDTH * state.WORLD_HEIGHT) * 0.02;
-        const mergeDistance = 100;
 
         Object.entries(teamRectLists).forEach(([teamName, rectList]) => {
-            // 国旗判定
             const chars = Array.from(teamName);
             if (chars.length < 2) return;
             const first = chars[0].codePointAt(0);
@@ -423,53 +517,10 @@ function generateMinimapBitmap() {
             if (first < 0x1F1E6 || first > 0x1F1FF || second < 0x1F1E6 || second > 0x1F1FF) return;
             const flag = chars[0] + chars[1];
 
-            // クラスタリング
-            const clusters = [];
-            const used = new Set();
-
-            rectList.forEach((rect, i) => {
-                if (used.has(i)) return;
-
-                const cluster = { rects: [rect], totalArea: rect.w * rect.h, sumX: 0, sumY: 0 };
-                const area = rect.w * rect.h;
-                cluster.sumX = (rect.x + rect.w / 2) * area;
-                cluster.sumY = (rect.y + rect.h / 2) * area;
-                used.add(i);
-
-                let changed = true;
-                while (changed) {
-                    changed = false;
-                    rectList.forEach((other, j) => {
-                        if (used.has(j)) return;
-                        for (const cr of cluster.rects) {
-                            const dist = Math.hypot(
-                                (cr.x + cr.w / 2) - (other.x + other.w / 2),
-                                (cr.y + cr.h / 2) - (other.y + other.h / 2)
-                            );
-                            if (dist < mergeDistance) {
-                                cluster.rects.push(other);
-                                const otherArea = other.w * other.h;
-                                cluster.totalArea += otherArea;
-                                cluster.sumX += (other.x + other.w / 2) * otherArea;
-                                cluster.sumY += (other.y + other.h / 2) * otherArea;
-                                used.add(j);
-                                changed = true;
-                                break;
-                            }
-                        }
-                    });
-                }
-
-                clusters.push(cluster);
-            });
-
+            const clusters = clusterRectsUnionFind(rectList, 100);
             clusters.forEach(cluster => {
                 if (cluster.totalArea < minClusterArea) return;
-
-                const centerX = cluster.sumX / cluster.totalArea;
-                const centerY = cluster.sumY / cluster.totalArea;
-
-                flags.push({ f: flag, x: centerX, y: centerY });
+                flags.push({ f: flag, x: cluster.centerX, y: cluster.centerY });
             });
         });
     }
@@ -732,7 +783,21 @@ function attemptCapture(playerId) {
         if (ownerIslands.length > 1) {
             ownerIslands.sort((a, b) => b.size - a.size);
             const maxSize = ownerIslands[0].size;
-            if (maxSize <= 10) {
+            // 最大島が狭い（幅or高さ5グリッド以下）なら全島奪取
+            let largestIsNarrow = false;
+            if (maxSize > 10) {
+                let minX = GRID_COLS, maxX = 0, minY = GRID_ROWS, maxY = 0;
+                ownerIslands[0].cells.forEach(idx => {
+                    const cx = idx % GRID_COLS;
+                    const cy = (idx - cx) / GRID_COLS;
+                    if (cx < minX) minX = cx;
+                    if (cx > maxX) maxX = cx;
+                    if (cy < minY) minY = cy;
+                    if (cy > maxY) maxY = cy;
+                });
+                if (maxX - minX + 1 <= 5 || maxY - minY + 1 <= 5) largestIsNarrow = true;
+            }
+            if (maxSize <= 10 || largestIsNarrow) {
                 ownerIslands.forEach(island => island.cells.forEach(idx => { enemyCaptureZone[idx] = 1; }));
             } else {
                 for (let i = 1; i < ownerIslands.length; i++) {
@@ -798,7 +863,21 @@ function attemptCapture(playerId) {
     if (blankIslands.length > 1) {
         blankIslands.sort((a, b) => b.size - a.size);
         const maxSize = blankIslands[0].size;
-        if (maxSize <= 10) {
+        // 最大島が狭い（幅or高さ5グリッド以下）なら全島奪取
+        let largestIsNarrow = false;
+        if (maxSize > 10) {
+            let minX = GRID_COLS, maxX = 0, minY = GRID_ROWS, maxY = 0;
+            blankIslands[0].cells.forEach(idx => {
+                const cx = idx % GRID_COLS;
+                const cy = (idx - cx) / GRID_COLS;
+                if (cx < minX) minX = cx;
+                if (cx > maxX) maxX = cx;
+                if (cy < minY) minY = cy;
+                if (cy > maxY) maxY = cy;
+            });
+            if (maxX - minX + 1 <= 5 || maxY - minY + 1 <= 5) largestIsNarrow = true;
+        }
+        if (maxSize <= 10 || largestIsNarrow) {
             blankIslands.forEach(island => island.cells.forEach(idx => { blankCaptureZone[idx] = 1; }));
         } else {
             for (let i = 1; i < blankIslands.length; i++) {
@@ -807,19 +886,37 @@ function attemptCapture(playerId) {
         }
     }
 
-    // Capture Step
+    // Capture Step（改善: 早期スキップ + キル検出Map化 + rebuild統合）
     let capturedCount = 0;
     let kills = [];
+
+    // キル検出用: プレイヤー位置をMapに事前構築（O(1)ルックアップ）
+    const playerGridMap = new Map();
+    Object.values(players).forEach(target => {
+        if (target.id !== playerId && target.state === 'active') {
+            if (p.team && target.team === p.team) return;
+            const key = toGrid(target.x) * 100000 + toGrid(target.y);
+            if (!playerGridMap.has(key)) playerGridMap.set(key, []);
+            playerGridMap.get(key).push(target.id);
+        }
+    });
 
     for (let y = 0; y < GRID_ROWS; y++) {
         for (let x = 0; x < GRID_COLS; x++) {
             const idx = y * GRID_COLS + x;
+            // 早期スキップ: 自陣/障害物/味方はキャプチャ不要
+            if (baseGrid[idx] === 1) continue;
+            // 早期スキップ: 外部到達可能セル（トレイル壁あり）はキャプチャ不要
+            if (visitedCur[idx] === 1) continue;
+
             const oldOwner = worldGrid[y][x];
-            const isNewlyEnclosed = (visitedCur[idx] === 0 && visitedPre[idx] === 1);
+            if (isObstacleCell(oldOwner)) continue;
+
+            const isNewlyEnclosed = visitedPre[idx] === 1;
             const isEnemyCapturable = enemyCaptureZone[idx] === 1;
             const isBlankCapturable = blankCaptureZone[idx] === 1;
 
-            if ((isNewlyEnclosed || isEnemyCapturable || isBlankCapturable) && !isObstacleCell(oldOwner)) {
+            if (isNewlyEnclosed || isEnemyCapturable || isBlankCapturable) {
                 let isTeammate = false;
                 if (p.team && oldOwner) {
                     const op = players[oldOwner];
@@ -833,14 +930,9 @@ function attemptCapture(playerId) {
                     worldGrid[y][x] = playerId;
                     capturedCount++;
 
-                    Object.values(players).forEach(target => {
-                        if (target.id !== playerId && target.state === 'active') {
-                            if (p.team && target.team === p.team) return;
-                            const tgx = toGrid(target.x);
-                            const tgy = toGrid(target.y);
-                            if (tgx === x && tgy === y) kills.push(target.id);
-                        }
-                    });
+                    // Map O(1)ルックアップでキル判定
+                    const hitPlayers = playerGridMap.get(x * 100000 + y);
+                    if (hitPlayers) kills.push(...hitPlayers);
                 }
             }
         }
@@ -848,35 +940,28 @@ function attemptCapture(playerId) {
 
     if (capturedCount > 0) {
         p.score += capturedCount;
-        rebuildTerritoryRects();
 
         if (kills.length > 0 && killPlayerFn) {
+            // キル処理
             kills.forEach(kid => {
                 killPlayerFn(kid, `${p.name}に囲まれた`, true);
                 p.kills = (p.kills || 0) + 1;
-                // 倒した相手の残り陣地を奪取（ライン切断と同様）
-                let stolenCount = 0;
-                state.territoryRects.forEach(rect => {
-                    if (rect.o === kid) {
-                        const gxStart = rect.x / GRID_SIZE;
-                        const rgy = rect.y / GRID_SIZE;
-                        const gw = rect.w / GRID_SIZE;
-                        for (let ddx = 0; ddx < gw; ddx++) {
-                            const rgx = gxStart + ddx;
-                            if (worldGrid[rgy] && worldGrid[rgy][rgx] === kid) {
-                                worldGrid[rgy][rgx] = playerId;
-                                stolenCount++;
-                            }
-                        }
-                    }
-                });
-                if (stolenCount > 0) {
-                    p.score += stolenCount;
-                    rebuildTerritoryRects();
-                }
             });
-            rebuildTerritoryRects();
+            // 倒した相手の残り陣地を一括奪取（worldGrid直接スキャン）
+            const killSet = new Set(kills);
+            let totalStolen = 0;
+            for (let sy = 0; sy < GRID_ROWS; sy++) {
+                const row = worldGrid[sy];
+                for (let sx = 0; sx < GRID_COLS; sx++) {
+                    if (killSet.has(row[sx])) {
+                        row[sx] = playerId;
+                        totalStolen++;
+                    }
+                }
+            }
+            if (totalStolen > 0) p.score += totalStolen;
         }
+        rebuildTerritoryRects();  // 1回だけ呼び出し（従来は最大4回）
     }
 
     p.gridTrail = [];
@@ -889,9 +974,9 @@ function attemptCapture(playerId) {
 function calculateMapFlags() {
     const flags = [];
     const mode = GAME_MODES[state.currentModeIdx];
-    
+
     if (mode !== 'TEAM') return flags;
-    
+
     const teamRectLists = {};
     state.territoryRects.forEach(t => {
         const owner = state.players[t.o];
@@ -903,11 +988,9 @@ function calculateMapFlags() {
         }
     });
 
-    const minClusterArea = (state.WORLD_WIDTH * state.WORLD_HEIGHT) * 0.015;  // 1.5%
-    const mergeDistance = 100;
+    const minClusterArea = (state.WORLD_WIDTH * state.WORLD_HEIGHT) * 0.015;
 
     Object.entries(teamRectLists).forEach(([teamName, rectList]) => {
-        // 国旗判定
         const chars = Array.from(teamName);
         if (chars.length < 2) return;
         const first = chars[0].codePointAt(0);
@@ -915,56 +998,13 @@ function calculateMapFlags() {
         if (first < 0x1F1E6 || first > 0x1F1FF || second < 0x1F1E6 || second > 0x1F1FF) return;
         const flag = chars[0] + chars[1];
 
-        // クラスタリング
-        const clusters = [];
-        const used = new Set();
-
-        rectList.forEach((rect, i) => {
-            if (used.has(i)) return;
-
-            const cluster = { rects: [rect], totalArea: rect.w * rect.h, sumX: 0, sumY: 0 };
-            const area = rect.w * rect.h;
-            cluster.sumX = (rect.x + rect.w / 2) * area;
-            cluster.sumY = (rect.y + rect.h / 2) * area;
-            used.add(i);
-
-            let changed = true;
-            while (changed) {
-                changed = false;
-                rectList.forEach((other, j) => {
-                    if (used.has(j)) return;
-                    for (const cr of cluster.rects) {
-                        const dist = Math.hypot(
-                            (cr.x + cr.w / 2) - (other.x + other.w / 2),
-                            (cr.y + cr.h / 2) - (other.y + other.h / 2)
-                        );
-                        if (dist < mergeDistance) {
-                            cluster.rects.push(other);
-                            const otherArea = other.w * other.h;
-                            cluster.totalArea += otherArea;
-                            cluster.sumX += (other.x + other.w / 2) * otherArea;
-                            cluster.sumY += (other.y + other.h / 2) * otherArea;
-                            used.add(j);
-                            changed = true;
-                            break;
-                        }
-                    }
-                });
-            }
-
-            clusters.push(cluster);
-        });
-
+        const clusters = clusterRectsUnionFind(rectList, 100);
         clusters.forEach(cluster => {
             if (cluster.totalArea < minClusterArea) return;
-
-            const centerX = cluster.sumX / cluster.totalArea;
-            const centerY = cluster.sumY / cluster.totalArea;
-
-            flags.push({ f: flag, x: centerX, y: centerY });
+            flags.push({ f: flag, x: cluster.centerX, y: cluster.centerY });
         });
     });
-    
+
     return flags;
 }
 

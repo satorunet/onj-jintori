@@ -106,6 +106,7 @@ const PLAYER_SPEED = 130;
 const BOOST_SPEED_MULTIPLIER = 1.8;  // ブースト時の速度倍率
 const BOOST_DURATION = 2000;         // ブースト持続時間（ミリ秒）
 const BOOST_COOLDOWN = 5000;         // ブーストクールダウン（ミリ秒）
+const JET_CHARGE_TIME = 20000;       // ジェットチャージ時間（ブースト使用可能後20秒で昇格）
 const GRID_SIZE = 10;
 const NO_SUICIDE = true;  // 自己ライン接触で死なないモード
 const AFK_DEATH_LIMIT = 2;
@@ -194,7 +195,10 @@ const state = {
 
     // スウォームモード
     swarmMode: false,                // スウォームモード有効/無効
-    swarmLeaderId: null              // スウォームリーダーID
+    swarmLeaderId: null,             // スウォームリーダーID
+
+    // イベント: 常時高速モード
+    highSpeedEvent: false            // 高速モードイベント ON/OFF
 };
 
 // ============================================================
@@ -308,6 +312,7 @@ module.exports = {
     BOOST_SPEED_MULTIPLIER,
     BOOST_DURATION,
     BOOST_COOLDOWN,
+    JET_CHARGE_TIME,
     GRID_SIZE,
     NO_SUICIDE,
     AFK_DEATH_LIMIT,

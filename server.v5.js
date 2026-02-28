@@ -23,7 +23,7 @@ const bench = require('./modules/bench-monitor');
 
 const {
     PORT, SSL_KEY_PATH, SSL_CERT_PATH, SERVER_VERSION,
-    GAME_DURATION, PLAYER_SPEED, BOOST_SPEED_MULTIPLIER, BOOST_DURATION, BOOST_COOLDOWN,
+    GAME_DURATION, PLAYER_SPEED, BOOST_SPEED_MULTIPLIER, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME,
     GRID_SIZE, NO_SUICIDE, RESPAWN_TIME, AFK_DEATH_LIMIT,
     CHAIN_SPACING, CHAIN_MAX_LENGTH, CHAIN_PATH_HISTORY_SIZE,
     SWARM_BOT_COUNT, SWARM_CHAIN_SPACING, SWARM_TEAM_NAME, SWARM_TEAM_COLOR,
@@ -365,10 +365,31 @@ setInterval(() => {
             p.autoRun = true;
         }
 
-        // ブースト状態の判定
-        const isBoosting = p.boostUntil && now < p.boostUntil;
-        const currentSpeed = isBoosting ? PLAYER_SPEED * BOOST_SPEED_MULTIPLIER : PLAYER_SPEED;
-        p.boosting = isBoosting;  // クライアント通知用
+        // ブースト/ジェット状態の判定
+        const personalBoosting = p.boostUntil && now < p.boostUntil;
+        const isJetting = p.jetUntil && now < p.jetUntil;
+        const isBoosting = state.highSpeedEvent || personalBoosting || isJetting;
+        let currentSpeed;
+        if (isJetting) {
+            currentSpeed = PLAYER_SPEED * BOOST_SPEED_MULTIPLIER * 2;  // ジェット（超高速）
+        } else if (state.highSpeedEvent && personalBoosting) {
+            currentSpeed = PLAYER_SPEED * BOOST_SPEED_MULTIPLIER * 2;  // マッハブースト（イベント時）
+        } else if (isBoosting) {
+            currentSpeed = PLAYER_SPEED * BOOST_SPEED_MULTIPLIER;
+        } else {
+            currentSpeed = PLAYER_SPEED;
+        }
+        p.boosting = isBoosting;
+        p.jetting = isJetting;
+        p.machBoosting = isJetting || (state.highSpeedEvent && personalBoosting);  // ジェット/マッハ状態フラグ
+
+        // ジェットチャージ追跡: ブースト使用可能状態の継続時間
+        const boostReady = !personalBoosting && !isJetting && (!p.boostCooldownUntil || now >= p.boostCooldownUntil);
+        if (boostReady) {
+            if (!p.boostReadySince) p.boostReadySince = now;
+        } else {
+            p.boostReadySince = 0;
+        }
 
         let nextX = p.x + p.dx * currentSpeed * dt;
         let nextY = p.y + p.dy * currentSpeed * dt;
@@ -511,26 +532,24 @@ setInterval(() => {
                                 hitTargets.add(target.id);
                                 killPlayer(target.id, `${p.name}に切られた`, true);
                                 p.kills++;
-                                // territoryRectsベースで対象プレイヤーの領地のみ走査
-                                let stolenCount = 0;
-                                state.territoryRects.forEach(rect => {
-                                    if (rect.o === target.id) {
-                                        const gxStart = rect.x / GRID_SIZE;
-                                        const rgy = rect.y / GRID_SIZE;
-                                        const gw = rect.w / GRID_SIZE;
-                                        for (let ddx = 0; ddx < gw; ddx++) {
-                                            const rgx = gxStart + ddx;
-                                            if (state.worldGrid[rgy] && state.worldGrid[rgy][rgx] === target.id) {
-                                                state.worldGrid[rgy][rgx] = p.id;
-                                                stolenCount++;
-                                            }
-                                        }
-                                    }
-                                });
-                                if (stolenCount > 0) { p.score += stolenCount; game.rebuildTerritoryRects(); }
                             }
                         }
                     }
+                }
+                // ライン切断kill後の陣地奪取: ループ外で一括処理 + rebuild1回
+                if (hitTargets.size > 0) {
+                    let totalStolen = 0;
+                    for (let sy = 0; sy < state.GRID_ROWS; sy++) {
+                        const row = state.worldGrid[sy];
+                        for (let sx = 0; sx < state.GRID_COLS; sx++) {
+                            if (hitTargets.has(row[sx])) {
+                                row[sx] = p.id;
+                                totalStolen++;
+                            }
+                        }
+                    }
+                    if (totalStolen > 0) p.score += totalStolen;
+                    game.rebuildTerritoryRects();  // 1回だけ
                 }
             }
         }
@@ -660,6 +679,8 @@ function respawnPlayer(p, fullReset = false) {
     p.invulnerableUntil = p.isCpu ? 0 : Date.now() + 3000;
     p.boostCooldownUntil = Date.now() + 5000;  // スポーン後5秒間ブースト使用不可
     p.boostUntil = 0;
+    p.jetUntil = 0;
+    p.boostReadySince = 0;
     // チェーン状態リセット
     p.chainRole = 'none';
     p.chainLeaderId = null;

@@ -5,7 +5,66 @@
 // チーム連結モード: 近くのチームメイトID
 let chainNearbyIds = [];
 
-// エフェクト関連（無効化・コード削除済み）
+// 衝撃波エフェクト
+let shockwaves = [];
+
+function spawnShockwave(x, y) {
+    shockwaves.push({ x, y, radius: 10, maxRadius: 120, life: 1.0, speed: 400 });
+    // パーティクルも散らす
+    if (!isLowPerformance) {
+        for (let i = 0; i < 20; i++) {
+            if (particles.length >= MAX_PARTICLES) break;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 150 + Math.random() * 250;
+            particles.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                color: `hsl(${(Math.random() * 60 + 10) | 0},100%,60%)`,
+                size: 3 + Math.random() * 5,
+                life: 1.0,
+                decay: 0.025 + Math.random() * 0.02,
+                gravity: 0,
+                sparkle: true
+            });
+        }
+    }
+}
+
+function updateShockwaves(dt) {
+    for (let i = shockwaves.length - 1; i >= 0; i--) {
+        const sw = shockwaves[i];
+        sw.radius += sw.speed * dt;
+        sw.life = 1 - (sw.radius / sw.maxRadius);
+        if (sw.life <= 0) shockwaves.splice(i, 1);
+    }
+}
+
+function drawShockwaves(ctx) {
+    for (const sw of shockwaves) {
+        ctx.save();
+        ctx.globalAlpha = sw.life * 0.7;
+        ctx.beginPath();
+        ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, ${(180 * sw.life) | 0}, 0, ${sw.life})`;
+        ctx.lineWidth = 4 + sw.life * 6;
+        if (!isLowPerformance) {
+            ctx.shadowColor = '#ff6600';
+            ctx.shadowBlur = 20;
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        // 内側の白いリング
+        if (sw.life > 0.3) {
+            ctx.beginPath();
+            ctx.arc(sw.x, sw.y, sw.radius * 0.7, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(255, 255, 255, ${sw.life * 0.4})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+}
 
 function spawnLineDestroyParticles(trail, color, playerX, playerY) {
     // 軽量モードではパーティクルを生成しない
@@ -370,6 +429,7 @@ function loop() {
     }
 
     updateParticles(dt);
+    updateShockwaves(dt);
 
     const lerpSpeed = 12;
     players.forEach(p => {
@@ -818,14 +878,36 @@ function loop() {
             drawPath();
             ctx.lineWidth = 8;
             
+            // リーダーがJET中ならフォロワーもJETエフェクト
+            const leaderJet = p.chainRole === 2 && p.chainLeaderId &&
+                players.some(lp => lp.id === p.chainLeaderId && lp.machBoosting);
+            const isJet = p.machBoosting || leaderJet;
+
             // ブースト中は虹色のラインエフェクト（低パフォーマンス時は簡略化）
-            if (p.boosting) {
+            if (isJet) {
+                // マッハブースト: 超高速虹色 + 太いライン
+                ctx.lineWidth = 12;
                 if (isLowPerformance) {
-                    // 低パフォーマンス: 単色で光らせる
+                    ctx.strokeStyle = '#ff4400';
+                } else {
+                    const hue = (Date.now() / 2) % 360;
+                    const h0 = hue | 0, h1 = (hue + 120) % 360 | 0, h2 = (hue + 240) % 360 | 0;
+                    const machGradient = ctx.createLinearGradient(
+                        points[0].x, points[0].y,
+                        points[points.length - 1].x, points[points.length - 1].y
+                    );
+                    machGradient.addColorStop(0, `hsl(${h0},100%,70%)`);
+                    machGradient.addColorStop(0.5, `hsl(${h1},100%,70%)`);
+                    machGradient.addColorStop(1, `hsl(${h2},100%,70%)`);
+                    ctx.strokeStyle = machGradient;
+                    ctx.shadowColor = '#ffffff';
+                    ctx.shadowBlur = 40;
+                }
+            } else if (p.boosting) {
+                if (isLowPerformance) {
                     ctx.strokeStyle = '#ffff00';
                 } else {
                     const hue = (Date.now() / 5) % 360;
-                    // 虹色グラデーション（hslテーブルキャッシュ）
                     const h0 = hue | 0, h1 = (hue + 100) % 360 | 0, h2 = (hue + 200) % 360 | 0;
                     const rainbowGradient = ctx.createLinearGradient(
                         points[0].x, points[0].y,
@@ -864,9 +946,50 @@ function loop() {
         }
 
         // ブースト中のエフェクト（低パフォーマンス時は簡略化）
-        if (p.boosting) {
+        const isJetBody = p.machBoosting || (p.chainRole === 2 && p.chainLeaderId &&
+            players.some(lp => lp.id === p.chainLeaderId && lp.machBoosting));
+        if (isJetBody) {
+            // マッハブースト: 超派手エフェクト
             if (!isLowPerformance) {
-                // 輝くオーラ
+                // 二重オーラ
+                const pulseSize = 32 + Math.sin(Date.now() / 30) * 8;
+                ctx.beginPath();
+                ctx.arc(0, 0, pulseSize, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 100, 0, 0.8)';
+                ctx.lineWidth = 5;
+                ctx.shadowColor = '#ff4400';
+                ctx.shadowBlur = 35;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                ctx.beginPath();
+                ctx.arc(0, 0, pulseSize + 8, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 大量スピードライン
+                const lineCount = 10;
+                for (let i = 0; i < lineCount; i++) {
+                    const angle = (Date.now() / 50 + i * (Math.PI * 2 / lineCount)) % (Math.PI * 2);
+                    const innerR = 22;
+                    const outerR = 45 + Math.random() * 15;
+                    ctx.beginPath();
+                    ctx.moveTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR);
+                    ctx.lineTo(Math.cos(angle) * outerR, Math.sin(angle) * outerR);
+                    ctx.strokeStyle = `rgba(255, ${150 + Math.random() * 105 | 0}, 0, 0.7)`;
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+            } else {
+                ctx.beginPath();
+                ctx.arc(0, 0, 26, 0, Math.PI * 2);
+                ctx.strokeStyle = '#ff4400';
+                ctx.lineWidth = 4;
+                ctx.stroke();
+            }
+        } else if (p.boosting) {
+            if (!isLowPerformance) {
                 const pulseSize = 25 + Math.sin(Date.now() / 50) * 5;
                 ctx.beginPath();
                 ctx.arc(0, 0, pulseSize, 0, Math.PI * 2);
@@ -876,8 +999,7 @@ function loop() {
                 ctx.shadowBlur = 20;
                 ctx.stroke();
                 ctx.shadowBlur = 0;
-                
-                // スピードライン
+
                 const lineCount = 6;
                 for (let i = 0; i < lineCount; i++) {
                     const angle = (Date.now() / 100 + i * (Math.PI * 2 / lineCount)) % (Math.PI * 2);
@@ -891,7 +1013,6 @@ function loop() {
                     ctx.stroke();
                 }
             } else {
-                // 低パフォーマンス: シンプルな円だけ
                 ctx.beginPath();
                 ctx.arc(0, 0, 22, 0, Math.PI * 2);
                 ctx.strokeStyle = '#ffff00';
@@ -902,11 +1023,11 @@ function loop() {
 
         if (!isLowPerformance) {
             ctx.shadowColor = color;
-            ctx.shadowBlur = p.boosting ? 25 : 15;
+            ctx.shadowBlur = isJetBody ? 40 : p.boosting ? 25 : 15;
         }
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(0, 0, p.boosting ? 18 : 16, 0, Math.PI * 2);
+        ctx.arc(0, 0, isJetBody ? 20 : p.boosting ? 18 : 16, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
         ctx.globalAlpha = 1.0;
@@ -939,6 +1060,7 @@ function loop() {
     });
 
     drawParticles(ctx);
+    drawShockwaves(ctx);
 
     // 連結候補リング表示
     if (chainNearbyIds.length > 0) {
@@ -1002,17 +1124,44 @@ function drawBoostGauge(ctx) {
     
     ctx.save();
     
-    if (boostRemainingMs > 0) {
-        // ブースト中: 虹色グラデーションのボタン
-        const progress = boostRemainingMs / 2000;
-        
-        // 虹色背景
+    if (machBoosting) {
+        // マッハブースト中: 炎のようなボタン
+        const hue = (Date.now() / 3) % 360;
+        const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX + gaugeWidth, gaugeY);
+        gradient.addColorStop(0, `hsl(${hue}, 100%, 55%)`);
+        gradient.addColorStop(0.3, '#ff4400');
+        gradient.addColorStop(0.7, '#ffaa00');
+        gradient.addColorStop(1, `hsl(${(hue + 60) % 360}, 100%, 55%)`);
+
+        ctx.fillStyle = gradient;
+        ctx.shadowColor = '#ff4400';
+        ctx.shadowBlur = 25;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 4;
+        ctx.fillText('\ud83d\ude80 JET!!', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.shadowBlur = 0;
+
+    } else if (boostRemainingMs > 0) {
+        // 通常ブースト中: 虹色グラデーションのボタン
         const hue = (Date.now() / 10) % 360;
         const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX + gaugeWidth, gaugeY);
         gradient.addColorStop(0, `hsl(${hue}, 100%, 50%)`);
         gradient.addColorStop(0.5, `hsl(${(hue + 60) % 360}, 100%, 50%)`);
         gradient.addColorStop(1, `hsl(${(hue + 120) % 360}, 100%, 50%)`);
-        
+
         ctx.fillStyle = gradient;
         ctx.shadowColor = '#ffff00';
         ctx.shadowBlur = 15;
@@ -1020,22 +1169,20 @@ function drawBoostGauge(ctx) {
         ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
         ctx.fill();
         ctx.shadowBlur = 0;
-        
-        // 枠
+
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2;
         ctx.stroke();
-        
-        // テキスト
+
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.shadowColor = '#000';
         ctx.shadowBlur = 4;
-        ctx.fillText('⚡ BOOST!', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.fillText('\u26a1 BOOST!', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
         ctx.shadowBlur = 0;
-        
+
     } else if (boostCooldownSec > 0) {
         // クールダウン中: グレーのボタン
         const progress = 1 - (boostCooldownSec / 5);
@@ -1066,12 +1213,109 @@ function drawBoostGauge(ctx) {
         ctx.textBaseline = 'middle';
         ctx.fillText(`${boostCooldownSec}秒`, gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
         
-    } else {
-        // 使用可能: 緑のボタン
+    } else if (jetChargeSec >= 20) {
+        // ジェット使用可能: オレンジ系のJETボタン（脈動エフェクト）
+        const pulse = 0.85 + Math.sin(Date.now() / 200) * 0.15;
+        const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
+        gradient.addColorStop(0, '#ffaa00');
+        gradient.addColorStop(1, '#ff6600');
+
+        ctx.fillStyle = gradient;
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = 15 * pulse;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 + Math.sin(Date.now() / 150) * 0.4})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#993300';
+        ctx.shadowBlur = 3;
+        ctx.fillText('\ud83d\ude80 JET', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.shadowBlur = 0;
+    } else if (highSpeedEvent) {
+        // イベント中: JETボタン（オレンジ系）
+        const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
+        gradient.addColorStop(0, '#ffaa00');
+        gradient.addColorStop(1, '#ff6600');
+
+        ctx.fillStyle = gradient;
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#993300';
+        ctx.shadowBlur = 2;
+        ctx.fillText('\ud83d\ude80 JET', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.shadowBlur = 0;
+    } else if (jetChargeSec > 0) {
+        // ジェットチャージ中: 緑→オレンジのグラデーション進行ボタン
+        const chargeProgress = jetChargeSec / 20;
+
+        // 背景（緑ベース）
         const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
         gradient.addColorStop(0, '#66ff66');
         gradient.addColorStop(1, '#22cc22');
-        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.fill();
+
+        // チャージ進行バー（オレンジ系）
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.clip();
+        const jetGradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
+        jetGradient.addColorStop(0, '#ffaa00');
+        jetGradient.addColorStop(1, '#ff6600');
+        ctx.fillStyle = jetGradient;
+        ctx.fillRect(gaugeX, gaugeY, gaugeWidth * chargeProgress, gaugeHeight);
+        ctx.restore();
+
+        // 枠
+        ctx.shadowColor = chargeProgress > 0.5 ? '#ff8800' : '#44ff44';
+        ctx.shadowBlur = 6;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // テキスト
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 3;
+        ctx.fillText(`\u26a1BOOST \ud83d\ude80${jetChargeSec}s`, gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.shadowBlur = 0;
+    } else {
+        // 使用可能: 緑のボタン（通常ブースト）
+        const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
+        gradient.addColorStop(0, '#66ff66');
+        gradient.addColorStop(1, '#22cc22');
+
         ctx.fillStyle = gradient;
         ctx.shadowColor = '#44ff44';
         ctx.shadowBlur = 10;
@@ -1079,20 +1323,18 @@ function drawBoostGauge(ctx) {
         ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
         ctx.fill();
         ctx.shadowBlur = 0;
-        
-        // 枠
+
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2;
         ctx.stroke();
-        
-        // テキスト
+
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 13px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.shadowColor = '#006600';
         ctx.shadowBlur = 2;
-        ctx.fillText('⚡BOOST', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.fillText('\u26a1BOOST', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
         ctx.shadowBlur = 0;
     }
     

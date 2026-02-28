@@ -602,6 +602,21 @@
                     </div>
                     <p style="color:#94a3b8; font-size:0.8rem; margin-top:8px;">50体のBOTが蛇形連結で移動し、敵プレイヤーを攻撃します</p>
                 </div>
+
+                <div class="card">
+                    <h3>⚡ 高速モードイベント（常時ブースト）</h3>
+                    <div style="display:flex; align-items:center; gap:16px; margin-top:10px;">
+                        <div style="font-size:1.2rem; font-weight:bold; color:${data.highSpeedEvent ? '#f59e0b' : '#94a3b8'};">
+                            ${data.highSpeedEvent ? '🟡 ON' : '⚫ OFF'}
+                        </div>
+                        <button onclick="toggleHighSpeed(${data.highSpeedEvent ? 'false' : 'true'})"
+                            style="padding:10px 24px; border:none; border-radius:8px; cursor:pointer; font-family:inherit; font-size:0.95rem; font-weight:bold;
+                            background:${data.highSpeedEvent ? '#ef4444' : '#f59e0b'}; color:white;">
+                            ${data.highSpeedEvent ? '🛑 高速モード停止' : '⚡ 高速モード開始'}
+                        </button>
+                    </div>
+                    <p style="color:#94a3b8; font-size:0.8rem; margin-top:8px;">全プレイヤーが常時ブースト状態になります（速度×${1.8}）</p>
+                </div>
                 `;
 
                 content.innerHTML = html;
@@ -679,6 +694,25 @@
         async function toggleSwarm(enabled) {
             try {
                 const res = await fetch(API_BASE + '/api/admin/swarm-toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ enabled })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    loadRealtime();
+                } else {
+                    alert('エラー: ' + (data.error || '不明なエラー'));
+                }
+            } catch (e) {
+                alert('通信エラー: ' + e.message);
+            }
+        }
+
+        async function toggleHighSpeed(enabled) {
+            try {
+                const res = await fetch(API_BASE + '/api/admin/highspeed-toggle', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',

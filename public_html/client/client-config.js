@@ -96,6 +96,11 @@ let lastForceSendTime = 0;
 let boostRemainingMs = 0;       // ブースト残り時間（ミリ秒、サーバーから受信）
 let boostCooldownSec = 0;       // クールダウン残り秒数
 let boostRequested = false;     // 今回の送信でブーストをリクエストするか
+let jetChargeSec = 0;           // ジェットチャージ秒数（0-20、サーバーから受信）
+
+// イベント
+let highSpeedEvent = false;     // 高速モードイベント中かどうか
+let machBoosting = false;       // マッハブースト中かどうか（自分）＝ジェット中
 
 // レンダリング
 let lastLoopTime = Date.now();

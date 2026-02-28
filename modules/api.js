@@ -336,7 +336,8 @@ async function handleHttpRequest(req, res) {
                     periodBytesSent: bandwidthStats.periodBytesSent,
                     periodBytesReceived: bandwidthStats.periodBytesReceived
                 },
-                swarmMode: state.swarmMode
+                swarmMode: state.swarmMode,
+                highSpeedEvent: state.highSpeedEvent
             };
 
             res.writeHead(200);
@@ -488,6 +489,33 @@ async function handleHttpRequest(req, res) {
                 }
                 res.writeHead(200);
                 res.end(JSON.stringify({ success: true, swarmMode: state.swarmMode }));
+            } catch (err) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Bad request: ' + err.message }));
+            }
+            return;
+        }
+
+        // ========================================
+        // API: 高速モードイベント切替 (認証必須)
+        // ========================================
+        if (urlPath === '/api/admin/highspeed-toggle' && req.method === 'POST') {
+            const isLocal = req.socket.remoteAddress === '::1' || req.socket.remoteAddress === '127.0.0.1' || req.socket.remoteAddress === '::ffff:127.0.0.1';
+            if (!isLocal) {
+                const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+                if (!adminAuth.validateSession(sessionId)) {
+                    res.writeHead(401);
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+            }
+            try {
+                const body = await readBody(req);
+                const { enabled } = JSON.parse(body);
+                state.highSpeedEvent = !!enabled;
+                console.log(`[EVENT] 高速モード: ${state.highSpeedEvent ? 'ON' : 'OFF'}`);
+                res.writeHead(200);
+                res.end(JSON.stringify({ success: true, highSpeedEvent: state.highSpeedEvent }));
             } catch (err) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: 'Bad request: ' + err.message }));

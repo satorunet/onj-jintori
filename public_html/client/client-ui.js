@@ -726,6 +726,23 @@ function updateUI(time) {
     }
 }
 
+// イベントバナー更新
+let _eventBannerTimer = null;
+function updateEventBanner() {
+    const banner = document.getElementById('event-banner');
+    if (!banner) return;
+    if (_eventBannerTimer) { clearTimeout(_eventBannerTimer); _eventBannerTimer = null; }
+    if (highSpeedEvent) {
+        banner.style.display = 'block';
+        banner.textContent = '\u26a1 \u30d6\u30fc\u30b9\u30c8\u796d\u958b\u50ac\u4e2d \u26a1';
+        _eventBannerTimer = setTimeout(() => {
+            banner.style.display = 'none';
+        }, 10000);
+    } else {
+        banner.style.display = 'none';
+    }
+}
+
 // Intl.Segmenterキャッシュ（毎フレーム生成を回避）
 const _segmenter = (typeof Intl !== 'undefined' && Intl.Segmenter) ? new Intl.Segmenter('ja', { granularity: 'grapheme' }) : null;
 

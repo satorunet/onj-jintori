@@ -275,7 +275,8 @@ function connect() {
                     score: serverP.s !== undefined ? serverP.s : (scoreData.score || 0),
                     state: state,
                     invulnerableCount: serverP.iv !== undefined ? serverP.iv : invulnerableCount,
-                    boosting: serverP.bs ? true : false,  // ブースト中フラグ
+                    boosting: highSpeedEvent || (serverP.bs ? true : false),  // イベント中は常時ブースト
+                    machBoosting: serverP.mb ? true : false,  // マッハブースト中
                     chainRole: serverP.cr || 0,            // 0=none, 1=leader, 2=follower
                     chainLeaderId: serverP.cl || null,
                     chainAnchorX: serverP.cax || 0,
@@ -287,10 +288,10 @@ function connect() {
                     chainNearbyIds = serverP.cn || [];
                 }
 
-                // 自分のブースト情報を更新
+                // 自分のブースト/ジェット情報を更新
                 if (sId === myId) {
                     if (serverP.bs) {
-                        boostRemainingMs = serverP.bs * 100;  // 100msあたり1
+                        boostRemainingMs = serverP.bs * 100;
                     } else {
                         boostRemainingMs = 0;
                     }
@@ -299,6 +300,8 @@ function connect() {
                     } else {
                         boostCooldownSec = 0;
                     }
+                    machBoosting = !!serverP.mb;
+                    jetChargeSec = serverP.jc || 0;
                 }
 
                 let existing = players.find(p => p.id === normalized.id);
@@ -351,7 +354,12 @@ function connect() {
                     }
                     
                     existing.trail = normalized.trail;
-                    existing.boosting = normalized.boosting;  // ブースト状態をコピー
+                    existing.boosting = normalized.boosting;
+                    // JET発動の瞬間に衝撃波
+                    if (normalized.machBoosting && !existing.machBoosting) {
+                        if (typeof spawnShockwave === 'function') spawnShockwave(existing.x, existing.y);
+                    }
+                    existing.machBoosting = normalized.machBoosting;
                     existing.chainRole = normalized.chainRole;
                     existing.chainLeaderId = normalized.chainLeaderId;
                     existing.chainAnchorX = normalized.chainAnchorX;
@@ -486,6 +494,11 @@ function connect() {
                 territories = data.territories.map(normalizeTerritory);
                 rebuildTerritoryMap();
             }
+
+            // 高速モードイベント状態更新
+            const wasHighSpeed = highSpeedEvent;
+            highSpeedEvent = !!data.hs;
+            if (highSpeedEvent !== wasHighSpeed) updateEventBanner();
 
             const timeData = data.tm !== undefined ? data.tm : data.time;
             updateUI(timeData);

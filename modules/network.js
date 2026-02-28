@@ -10,7 +10,7 @@ const config = require('./config');
 const botAuth = require('./bot-auth');
 const cpu = require('./cpu');
 const bench = require('./bench-monitor');
-const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, GRID_SIZE, state, bandwidthStats } = config;
+const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME, GRID_SIZE, state, bandwidthStats } = config;
 
 // IP別接続数の追跡（同一IP 2窓制限）
 const ipConnectionCount = new Map();
@@ -185,14 +185,24 @@ function setupConnectionHandler() {
                     p.invulnerableUntil = 0;
                 }
 
-                // 2バイト目: ブーストリクエスト
+                // 2バイト目: ブースト/ジェットリクエスト
                 if (msg.length === 2 && msg[1] === 1) {
                     const now = Date.now();
                     const canBoost = !p.boostCooldownUntil || now >= p.boostCooldownUntil;
                     if (canBoost) {
-                        p.boostUntil = now + BOOST_DURATION;
-                        p.boostCooldownUntil = now + BOOST_COOLDOWN;
-                        console.log(`[BOOST] ${p.name} activated boost`);
+                        // ジェットチャージ済みかチェック（20秒間ブースト未使用）
+                        const jetReady = p.boostReadySince && (now - p.boostReadySince >= JET_CHARGE_TIME);
+                        if (jetReady) {
+                            p.jetUntil = now + BOOST_DURATION;
+                            p.boostCooldownUntil = now + BOOST_COOLDOWN;
+                            p.boostReadySince = 0;
+                            console.log(`[JET] ${p.name} activated JET!`);
+                        } else {
+                            p.boostUntil = now + BOOST_DURATION;
+                            p.boostCooldownUntil = now + BOOST_COOLDOWN;
+                            p.boostReadySince = 0;
+                            console.log(`[BOOST] ${p.name} activated boost`);
+                        }
                     }
                 }
                 return;
@@ -629,6 +639,7 @@ function startBroadcastLoop() {
             pc: Object.values(state.players).filter(p => p.state !== 'waiting').length,
             te: null
         };
+        if (state.highSpeedEvent) baseStateMsg.hs = 1;
 
         if (frameCount % 120 === 0) {
             const newTeamStats = game.getTeamStats();
@@ -756,19 +767,33 @@ function startBroadcastLoop() {
                     if (nearby.length > 0) data.cn = nearby; // chain nearby
                 }
 
-                // ブースト状態（自分のプレイヤーのみ詳細情報を送信）
+                // ブースト/ジェット状態（自分のプレイヤーのみ詳細情報を送信）
                 if (isMe) {
-                    // ブースト中: 残り時間（100msあたり1）
-                    if (p.boostUntil && now < p.boostUntil) {
-                        data.bs = Math.ceil((p.boostUntil - now) / 100);
+                    // ジェット中の残り時間
+                    if (p.jetUntil && now < p.jetUntil) {
+                        data.bs = Math.ceil((p.jetUntil - now) / 100);
+                        data.mb = 1;  // ジェット（マッハ）フラグ
                     }
-                    // クールダウン中: 残り時間（秒）
+                    // 個人ブースト中の残り時間
+                    else if (p.boostUntil && now < p.boostUntil) {
+                        data.bs = Math.ceil((p.boostUntil - now) / 100);
+                        if (state.highSpeedEvent) data.mb = 1;  // イベント時マッハフラグ
+                    }
+                    // クールダウン中
                     if (p.boostCooldownUntil && now < p.boostCooldownUntil) {
                         data.bc = Math.ceil((p.boostCooldownUntil - now) / 1000);
                     }
+                    // ジェットチャージ進捗（ブースト使用可能で蓄積中）
+                    if (p.boostReadySince && !data.bs && !data.bc) {
+                        const chargeMs = now - p.boostReadySince;
+                        if (chargeMs > 0) {
+                            data.jc = Math.min(20, Math.floor(chargeMs / 1000));  // 0-20秒
+                        }
+                    }
                 } else {
-                    // 他プレイヤー: ブースト中かどうかだけ（エフェクト表示用）
+                    // 他プレイヤー: ブースト中かどうか + ジェット/マッハ状態
                     if (p.boosting) data.bs = 1;
+                    if (p.machBoosting) data.mb = 1;
                 }
 
                 // 軌跡の差分送信処理
