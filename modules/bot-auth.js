@@ -3,6 +3,7 @@
  * Bot認証システム - 3桁数字画像生成と検証
  */
 
+const crypto = require('crypto');
 const { state, dbPool } = require('./config');
 
 // ============================================================
@@ -66,20 +67,73 @@ function generateCaptchaImage() {
 }
 
 // ============================================================
+// Cookie認証セッション管理（24時間有効）
+// ============================================================
+const BOT_AUTH_SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
+
+function createBotAuthSession(ip) {
+    const token = crypto.randomBytes(32).toString('hex');
+    state.botAuthSessions.set(token, { ip, createdAt: Date.now() });
+    console.log(`[BOT-AUTH] Created cookie session for IP: ${ip}`);
+
+    // 古いセッションを掃除
+    const now = Date.now();
+    for (const [t, data] of state.botAuthSessions.entries()) {
+        if (now - data.createdAt > BOT_AUTH_SESSION_TTL) {
+            state.botAuthSessions.delete(t);
+        }
+    }
+    return token;
+}
+
+function isValidBotAuthSession(token) {
+    if (!token) return false;
+    const session = state.botAuthSessions.get(token);
+    if (!session) return false;
+    if (Date.now() - session.createdAt > BOT_AUTH_SESSION_TTL) {
+        state.botAuthSessions.delete(token);
+        return false;
+    }
+    return true;
+}
+
+function getBotAuthTokenFromCookie(cookieHeader) {
+    if (!cookieHeader) return null;
+    const match = cookieHeader.match(/(?:^|;\s*)bot_auth_session=([a-f0-9]{64})/);
+    return match ? match[1] : null;
+}
+
+// ============================================================
 // Bot認証が必要かチェック
 // ============================================================
-function needsBotAuth(ip) {
+function needsBotAuth(ip, cookieHeader) {
     if (!ip || ip === 'unknown') return false;
-    
+
     const afkTime = state.afkTimeoutIPs.get(ip);
     if (!afkTime) return false;
-    
+
     const now = Date.now();
     const timeSinceAfk = now - afkTime;
-    
+
     // 5分以内の再接続の場合は認証が必要
     const AUTH_WINDOW = 5 * 60 * 1000; // 5分
-    return timeSinceAfk < AUTH_WINDOW;
+    if (timeSinceAfk >= AUTH_WINDOW) return false;
+
+    // Cookie認証セッションがあればスキップ（24時間有効）
+    const token = getBotAuthTokenFromCookie(cookieHeader);
+    if (token && isValidBotAuthSession(token)) {
+        console.log(`[BOT-AUTH] IP ${ip} has valid cookie session, skipping CAPTCHA`);
+        return false;
+    }
+
+    // 既にCAPTCHA認証済みのIPはスキップ（1時間有効）
+    const verifiedTime = state.captchaVerifiedIPs.get(ip);
+    if (verifiedTime && (now - verifiedTime) < 60 * 60 * 1000) {
+        console.log(`[BOT-AUTH] IP ${ip} already verified, skipping CAPTCHA`);
+        return false;
+    }
+
+    return true;
 }
 
 // ============================================================
@@ -211,9 +265,12 @@ async function recordAfkTimeout(ip, cfCountry = null, cfRay = null) {
 // ============================================================
 async function clearAfkTimeout(ip) {
     if (!ip || ip === 'unknown') return;
-    
+
     state.afkTimeoutIPs.delete(ip);
-    console.log(`[AFK] Cleared timeout record for IP: ${ip}`);
+
+    // CAPTCHA認証済みとして記録（次回以降はCAPTCHAスキップ）
+    state.captchaVerifiedIPs.set(ip, Date.now());
+    console.log(`[AFK] Cleared timeout record for IP: ${ip} (marked as CAPTCHA verified)`);
     
     // DBからも削除
     if (dbPool) {
@@ -269,5 +326,6 @@ module.exports = {
     verifyChallenge,
     recordAfkTimeout,
     clearAfkTimeout,
-    loadAfkTimeoutsFromDB
+    loadAfkTimeoutsFromDB,
+    createBotAuthSession
 };

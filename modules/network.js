@@ -8,7 +8,12 @@ const zlib = require('zlib');
 
 const config = require('./config');
 const botAuth = require('./bot-auth');
-const { GAME_MODES, TEAM_COLORS, BOOST_DURATION, BOOST_COOLDOWN, state, bandwidthStats } = config;
+const cpu = require('./cpu');
+const bench = require('./bench-monitor');
+const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, GRID_SIZE, state, bandwidthStats } = config;
+
+// IP別接続数の追跡（同一IP 2窓制限）
+const ipConnectionCount = new Map();
 
 // 外部依存（後から設定）
 let game = null;
@@ -48,11 +53,27 @@ function setupConnectionHandler() {
             console.log(`[WARN] Connection without CF-Connecting-IP header from: ${ip}`);
         }
 
+        // 同一IP 2窓制限
+        // cf-connecting-ipが実際のクライアントIP。それ以外（remoteAddress等）は
+        // CloudFlareエッジIPの可能性があるため制限対象外にする
+        const realClientIp = req.headers['cf-connecting-ip'] || null;
+        if (realClientIp) {
+            const currentCount = ipConnectionCount.get(realClientIp) || 0;
+            if (currentCount >= 2) {
+                console.log(`[CONN-LIMIT] Rejected connection from ${realClientIp} (already ${currentCount} connections)`);
+                ws.close(4020, 'Too many connections');
+                return;
+            }
+            ipConnectionCount.set(realClientIp, currentCount + 1);
+        }
+        // close時にIPを参照できるよう保存（拒否された場合はここに到達しない）
+        ws.playerIp = realClientIp;
+
         ws.playerId = id;
         state.lastFullSyncVersion[id] = state.territoryVersion;
         
-        // Bot認証が必要かチェック
-        const requiresAuth = botAuth.needsBotAuth(ip);
+        // Bot認証が必要かチェック（Cookie認証セッションも確認）
+        const requiresAuth = botAuth.needsBotAuth(ip, req.headers.cookie);
 
         state.players[id] = {
             id, color, emoji, name: `P${id}`,
@@ -66,7 +87,21 @@ function setupConnectionHandler() {
             ip: ip,  // IPアドレスを保存
             cfCountry: req.headers['cf-ipcountry'] || null,      // CloudFlare: 国コード
             cfRay: req.headers['cf-ray'] || null,                 // CloudFlare: リクエストID
-            pendingAuth: requiresAuth  // 認証待ちフラグ
+            pendingAuth: requiresAuth,  // 認証待ちフラグ
+            // チーム連結モード
+            chainRole: 'none',        // 'none' | 'leader' | 'follower'
+            chainLeaderId: null,      // フォロワー時のリーダーID
+            chainFollowers: [],       // 直接の後続者IDリスト
+            chainPathHistory: [],     // リーダーの経路履歴
+            chainIndex: 0,            // 連結内の位置 (0=リーダー)
+            chainHasInput: false,     // フォロワーが方向入力中か
+            chainAnchorX: 0,          // アンカーポイント(描画用)
+            chainAnchorY: 0,
+            chainOffsetX: 0,          // リーダーからの相対X座標(剛体オフセット)
+            chainOffsetY: 0,          // リーダーからの相対Y座標(剛体オフセット)
+            chainPrevId: null,        // 直前のチェーンメンバーID（ロープ物理用）
+            chainPrevX: undefined,    // Verlet前回X座標
+            chainPrevY: undefined     // Verlet前回Y座標
         };
 
         if (requiresAuth) {
@@ -77,19 +112,20 @@ function setupConnectionHandler() {
         // 初期データは常に送信（認証待ちでもログイン画面・ユーザー数は表示する）
         ws.send(JSON.stringify({
             type: 'init', id, color, emoji,
-            world: { width: state.WORLD_WIDTH, height: state.WORLD_HEIGHT },
+            world: { width: state.WORLD_WIDTH, height: state.WORLD_HEIGHT, gs: GRID_SIZE },
             mode: GAME_MODES[state.currentModeIdx],
             obstacles: state.obstacles,
+            gears: state.gears || [],
             tf: state.territoryRects,
             tv: state.territoryVersion,
             teams: game.getTeamStats(),
-            pc: Object.keys(state.players).length
+            pc: Object.values(state.players).filter(p => p.state !== 'waiting').length
         }));
 
         // 既存プレイヤーのマスタ情報送信
         const existingPlayers = Object.values(state.players)
-            .filter(p => p.id !== id && p.name)
-            .map(p => ({ i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }));
+            .filter(p => p.id !== id && p.name && p.state !== 'waiting')
+            .map(p => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; return d; });
         if (existingPlayers.length > 0) {
             ws.send(JSON.stringify({ type: 'pm', players: existingPlayers }));
         }
@@ -126,6 +162,21 @@ function setupConnectionHandler() {
                 p.autoRun = false;
                 p.afkDeaths = 0;
 
+                // フォロワー中はブーストボタンで離脱、方向入力は無視
+                if (p.chainRole === 'follower') {
+                    if (msg.length === 2 && msg[1] === 1 && game.detachFromChain) {
+                        game.detachFromChain(p);
+                        // 離脱後、入力方向をセット（そのまま動き続ける）
+                        if (angleByte !== 255) {
+                            const normalized = angleByte / 254;
+                            const angle = normalized * 2 * Math.PI - Math.PI;
+                            p.dx = Math.cos(angle);
+                            p.dy = Math.sin(angle);
+                        }
+                    }
+                    return;
+                }
+
                 if (angleByte !== 255) {
                     const normalized = angleByte / 254;
                     const angle = normalized * 2 * Math.PI - Math.PI;
@@ -155,7 +206,19 @@ function setupConnectionHandler() {
         });
 
         ws.on('close', () => {
+            // IP接続数をデクリメント
+            const closedIp = ws.playerIp;
+            if (closedIp) {
+                const count = ipConnectionCount.get(closedIp) || 0;
+                if (count <= 1) {
+                    ipConnectionCount.delete(closedIp);
+                } else {
+                    ipConnectionCount.set(closedIp, count - 1);
+                }
+            }
+
             if (state.players[id]) {
+                if (game.detachFromChain) game.detachFromChain(state.players[id]);
                 state.usedShortIds.delete(state.players[id].id);
             }
             delete state.players[id];
@@ -190,9 +253,13 @@ async function handleJsonMessage(data, p, id, byteLen) {
             p.pendingAuth = false;
             await botAuth.clearAfkTimeout(p.ip);
 
+            // Cookie認証セッションを発行（24時間有効）
+            const sessionToken = botAuth.createBotAuthSession(p.ip);
+
             p.ws.send(JSON.stringify({
                 type: 'bot_auth_success',
-                message: '認証に成功しました'
+                message: '認証に成功しました',
+                sessionToken: sessionToken
             }));
 
             // 保存されたjoinデータがあれば自動的にjoin処理を実行
@@ -294,12 +361,24 @@ async function handleJsonMessage(data, p, id, byteLen) {
         // 国旗対応: コードポイント単位で5文字まで（国旗2+チーム名3）
         let team = teamChars.slice(0, 5).join('');
 
+        // CPU専用チームへの参加をブロック（デバッグ時は許可）
+        // if (team === CPU_TEAM_NAME) {
+        //     team = '';
+        // }
+
+        // 人間 vs BOTモード: 人間は強制的にHUMANチーム
+        if (HUMAN_VS_BOT) {
+            team = 'HUMAN';
+        }
+
         p.requestedTeam = team;
         const mode = GAME_MODES[state.currentModeIdx];
 
         if (mode === 'SOLO') {
             p.team = '';
-            p.color = p.originalColor;
+            // 色を再分配（既存プレイヤーと最大距離の色相を選ぶ）
+            p.color = game.getUniqueColor();
+            p.originalColor = p.color;
             p.name = name;
         } else {
             p.team = team;
@@ -322,13 +401,19 @@ async function handleJsonMessage(data, p, id, byteLen) {
             }
         }
 
+        // join時にemoji指定があれば上書き
+        if (data.emoji) p.emoji = data.emoji;
+
+        // 名前が「BOT」の場合はロボットアイコンに強制変更
+        if (name.toUpperCase() === 'BOT') p.emoji = '🤖';
+
         // respawnPlayer は game モジュールから呼び出す（後で統合時に設定）
         if (game.respawnPlayer) game.respawnPlayer(p, true);
         state.lastFullSyncVersion[p.id] = 0;
 
         game.broadcast({
             type: 'pm',
-            players: [{ i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }]
+            players: [(() => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; return d; })()]
         });
     } else if (data.type === 'update_team') {
         bandwidthStats.received.updateTeam += byteLen;
@@ -340,7 +425,10 @@ async function handleJsonMessage(data, p, id, byteLen) {
         if (reqTeamChars.length > 5) {
             console.log(`[WARN] ${id}: Team update too long, truncating`);
         }
-        p.requestedTeam = reqTeamChars.slice(0, 5).join('');
+        let reqTeam = reqTeamChars.slice(0, 5).join('');
+        // CPU専用チームへの参加をブロック
+        if (reqTeam === CPU_TEAM_NAME) reqTeam = '';
+        p.requestedTeam = reqTeam;
     } else if (data.type === 'perf') {
         // パフォーマンスモード設定（AOI調整用）
         const mode = data.mode;
@@ -376,6 +464,41 @@ async function handleJsonMessage(data, p, id, byteLen) {
 
             console.log(`[VIEWPORT] ${p.name || id}: ${w}x${h} → AOI: ${p.aoiHalfWidth}x${p.aoiHalfHeight}px`);
         }
+    } else if (data.type === 'chain_attach') {
+        if (p.state !== 'active') return;
+        const targetId = data.targetId;
+        const target = state.players[targetId];
+        if (!target || target.state !== 'active') return;
+        if (game.tryChainAttach) game.tryChainAttach(p, target);
+    } else if (data.type === 'chain_detach') {
+        if (p.state !== 'active') return;
+        if (p.chainRole === 'leader' && game.leaderLeaveChain) {
+            console.log(`[CHAIN] Leader ${p.name} left chain`);
+            game.leaderLeaveChain(p);
+        } else if (p.chainRole === 'follower' && game.detachFromChain) {
+            console.log(`[CHAIN] Follower ${p.name} detached from chain`);
+            game.detachFromChain(p);
+        }
+    } else if (data.type === 'team_chat') {
+        if (p.state !== 'active' || !p.team) return;
+        const rawText = (data.text || '').toString();
+        if (/[\x00-\x1f\x7f]/.test(rawText)) return;
+        const text = rawText.substring(0, 20);
+        if (text.trim().length === 0) return;
+
+        const entry = { text, name: p.name, color: p.color };
+        // サーバー側に蓄積
+        if (!state.teamChatLog[p.team]) state.teamChatLog[p.team] = [];
+        state.teamChatLog[p.team].push(entry);
+        if (state.teamChatLog[p.team].length > 50) state.teamChatLog[p.team].shift();
+
+        // 同じチームのメンバーにのみ送信
+        const msg = JSON.stringify({ type: 'team_chat', text, name: p.name, color: p.color });
+        Object.values(state.players).forEach(tp => {
+            if (tp.team === p.team && tp.ws && tp.ws.readyState === 1) {
+                tp.ws.send(msg);
+            }
+        });
     } else if (data.type === 'chat') {
         if (p.hasChattedInRound) return;
         bandwidthStats.received.chat += byteLen;
@@ -420,11 +543,14 @@ function startBroadcastLoop() {
     
     // チーム統計のキャッシュ（変化時のみ送信するため）
     let lastTeamStatsSerialized = '';
+    // 歯車占領状態キャッシュ
+    let lastGearCaptureSerialized = '';
 
     setInterval(() => {
+        const broadcastStart = bench.startTimer();
         const now = Date.now();
         const dt = now - bandwidthStats.lastTickTime;
-        const lag = Math.max(0, dt - 150);
+        const lag = Math.max(0, dt - 25);
         bandwidthStats.lagSum += lag;
         bandwidthStats.lagMax = Math.max(bandwidthStats.lagMax, lag);
         bandwidthStats.ticks++;
@@ -433,12 +559,41 @@ function startBroadcastLoop() {
         if (!state.roundActive) return;
         frameCount++;
 
-        // 基本プレイヤー情報を準備（軌跡バイナリは後でクライアントごとに生成）
+        // 基本プレイヤー情報を準備
         const activePlayers = Object.values(state.players).filter(p => p.state !== 'waiting');
+
+        // フルtrailバイナリをプレイヤー毎にキャッシュ（全クライアントで共有）
+        activePlayers.forEach(p => {
+            if (p.gridTrail && p.gridTrail.length > 0) {
+                const len = p.gridTrail.length;
+                // キャッシュが無い or trail長が変わった場合のみ再生成
+                if (!p._trailCache || p._trailCache.length !== len) {
+                    const bufSize = 4 + Math.max(0, len - 1) * 2;
+                    const buf = Buffer.allocUnsafe(bufSize);
+                    try {
+                        buf.writeUInt16LE(p.gridTrail[0].x, 0);
+                        buf.writeUInt16LE(p.gridTrail[0].y, 2);
+                        let prevX = p.gridTrail[0].x, prevY = p.gridTrail[0].y;
+                        for (let i = 1; i < len; i++) {
+                            const pt = p.gridTrail[i];
+                            const dx = Math.max(-128, Math.min(127, pt.x - prevX));
+                            const dy = Math.max(-128, Math.min(127, pt.y - prevY));
+                            buf.writeInt8(dx, 4 + (i - 1) * 2);
+                            buf.writeInt8(dy, 4 + (i - 1) * 2 + 1);
+                            prevX = pt.x; prevY = pt.y;
+                        }
+                        p._trailCache = { length: len, buffer: buf };
+                    } catch (e) { p._trailCache = null; }
+                }
+            } else {
+                p._trailCache = null;
+            }
+        });
         
-        // ミニマップ（10秒ごと）- 5秒→10秒に変更で帯域節約
+        // ミニマップ（プレイヤー数に応じて頻度可変: 5人以下=5秒、6-15人=10秒、16人以上=15秒）
         let minimapData = null, scoreboardData = null;
-        if (frameCount % 66 === 0) {  // 33→66に変更（10秒毎）
+        const minimapInterval = activePlayers.length <= 5 ? 200 : activePlayers.length <= 15 ? 400 : 600;
+        if (frameCount % minimapInterval === 0) {
             const territoryBitmap = game.generateMinimapBitmap();
             
             // カラーパレットからIDへのマッピング構築
@@ -457,16 +612,13 @@ function startBroadcastLoop() {
             minimapData = { tb: territoryBitmap, pl: playerPositions };
         }
         
-        // スコアボード（3秒ごと）- 全プレイヤーのスコア情報を送信
-        if (frameCount % 20 === 0) {  // 約3秒毎（20フレーム × 150ms）
-            scoreboardData = activePlayers.map(p => ({ 
-                i: p.id, 
-                s: p.score, 
+        // スコアボード（3秒ごと）- 動的フィールドのみ送信（name/team/color/emojiはpmで送信済み）
+        if (frameCount % 120 === 0) {  // 約3秒毎（120フレーム × 25ms）
+            scoreboardData = activePlayers.map(p => ({
+                i: p.id,
+                s: p.score,
                 k: p.kills || 0,
-                n: p.name,
-                t: p.team || '',
-                c: p.color,
-                e: p.emoji
+                d: p.deaths || 0
             }));
         }
 
@@ -474,11 +626,11 @@ function startBroadcastLoop() {
         const baseStateMsg = {
             type: 's',
             tm: state.timeRemaining,
-            pc: Object.keys(state.players).length,
+            pc: Object.values(state.players).filter(p => p.state !== 'waiting').length,
             te: null
         };
 
-        if (frameCount % 20 === 0) {
+        if (frameCount % 120 === 0) {
             const newTeamStats = game.getTeamStats();
             const serialized = JSON.stringify(newTeamStats);
             
@@ -486,6 +638,26 @@ function startBroadcastLoop() {
             if (serialized !== lastTeamStatsSerialized) {
                 baseStateMsg.te = newTeamStats;
                 lastTeamStatsSerialized = serialized;
+            }
+        }
+
+        // 歯車占領状態（変化時のみ送信）
+        if (state.gears && state.gears.length > 0) {
+            const gcData = state.gears.map((g, i) => {
+                const ci = g.captureInfo;
+                return {
+                    i,
+                    p: ci ? ci.topPercent : 0,
+                    c: ci ? ci.topColor : null,
+                    n: ci ? ci.topName : null,
+                    cb: g.capturedBy || null,
+                    cc: g.capturedColor || null
+                };
+            });
+            const gcSerialized = JSON.stringify(gcData);
+            if (gcSerialized !== lastGearCaptureSerialized) {
+                baseStateMsg.gc = gcData;
+                lastGearCaptureSerialized = gcSerialized;
             }
         }
 
@@ -556,13 +728,34 @@ function startBroadcastLoop() {
                     return;
                 }
 
-                const invulSec = (p.invulnerableUntil && now < p.invulnerableUntil) 
-                    ? Math.ceil((p.invulnerableUntil - now) / 1000) : 0;
-                let st = p.state === 'dead' ? 0 : p.state === 'waiting' ? 2 : invulSec > 0 ? 2 + invulSec : 1;
+                const isInvuln = !p.hasMovedSinceSpawn && !p.autoRun;
+                let st = p.state === 'dead' ? 0 : p.state === 'waiting' ? 2 : isInvuln ? 3 : 1;
 
                 const data = { i: p.id, x: Math.round(p.x), y: Math.round(p.y) };
                 if (st !== 1) data.st = st;
+                // チェーン情報
+                if (p.chainRole === 'leader') { data.cr = 1; }
+                else if (p.chainRole === 'follower') {
+                    data.cr = 2; data.cl = p.chainLeaderId;
+                    data.cax = Math.round(p.chainAnchorX);
+                    data.cay = Math.round(p.chainAnchorY);
+                }
                 
+                // 自分のプレイヤーのみ: 近くのチームメイトID（連結候補）
+                // ソロ(none)またはリーダー(leader)が連結可能
+                if (isMe && p.chainRole !== 'follower' && p.team && p.hasMovedSinceSpawn) {
+                    const nearby = [];
+                    activePlayers.forEach(t => {
+                        if (t.id === p.id || t.state !== 'active') return;
+                        if (t.team !== p.team || !t.hasMovedSinceSpawn) return;
+                        // リーダーの場合: 既に自分のチェーンにいるメンバーは除外
+                        if (p.chainRole === 'leader' && t.chainRole === 'follower' && t.chainLeaderId === p.id) return;
+                        const d = Math.hypot(p.x - t.x, p.y - t.y);
+                        if (d <= 100) nearby.push(t.id);
+                    });
+                    if (nearby.length > 0) data.cn = nearby; // chain nearby
+                }
+
                 // ブースト状態（自分のプレイヤーのみ詳細情報を送信）
                 if (isMe) {
                     // ブースト中: 残り時間（100msあたり1）
@@ -592,28 +785,15 @@ function startBroadcastLoop() {
                         lastLength === 0;  // 前回が空だった場合（陣地化後の新しい軌跡）
                     
                     if (needFullSync) {
-                        // 全軌跡送信
-                        const bufSize = 4 + Math.max(0, currentLength - 1) * 2;
-                        const trailBinary = Buffer.allocUnsafe(bufSize);
-                        try {
-                            trailBinary.writeUInt16LE(p.gridTrail[0].x, 0);
-                            trailBinary.writeUInt16LE(p.gridTrail[0].y, 2);
-                            let prevX = p.gridTrail[0].x, prevY = p.gridTrail[0].y;
-                            for (let i = 1; i < currentLength; i++) {
-                                const pt = p.gridTrail[i];
-                                let dx = Math.max(-128, Math.min(127, pt.x - prevX));
-                                let dy = Math.max(-128, Math.min(127, pt.y - prevY));
-                                trailBinary.writeInt8(dx, 4 + (i - 1) * 2);
-                                trailBinary.writeInt8(dy, 4 + (i - 1) * 2 + 1);
-                                prevX = pt.x; prevY = pt.y;
-                            }
-                            data.rb = trailBinary;
+                        // 全軌跡送信（プレイヤー毎キャッシュを利用）
+                        if (p._trailCache && p._trailCache.buffer) {
+                            data.rb = p._trailCache.buffer;
                             data.ft = 1;  // フル軌跡フラグ
-                        } catch (e) { /* ignore */ }
-                        
-                        trailState[p.id] = { 
-                            lastSentLength: currentLength, 
-                            lastFullTime: now 
+                        }
+
+                        trailState[p.id] = {
+                            lastSentLength: currentLength,
+                            lastFullTime: now
                         };
                     } else {
                         // 差分送信（lastLengthは上で既に計算済み）
@@ -687,7 +867,7 @@ function startBroadcastLoop() {
             
             // 機能別サイズ計測（サンプリング: 20回に1回 または 大きなデータを含む場合）
             const hasLargeData = msg.mm || msg.tf || msg.tfb;
-            if (frameCount % 20 === 0 || hasLargeData) {
+            if (frameCount % 120 === 0 || hasLargeData) {
                 try {
                     // 各フィールドの推定サイズ（個別エンコード）
                     bandwidthStats.breakdown.base += msgpack.encode({ type: msg.type, tm: msg.tm, pc: msg.pc }).length;
@@ -701,7 +881,20 @@ function startBroadcastLoop() {
                 } catch (e) { /* ignore */ }
             }
         });
-    }, 150);
+
+        bench.recordBroadcastTick(bench.endTimer(broadcastStart));
+
+        // bench_stats をクライアントに送信（30秒ごと）
+        if (bench.BENCH_ENABLED && frameCount % 1200 === 0) {
+            const benchStats = bench.getStats();
+            const benchMsg = JSON.stringify({ type: 'bench_stats', ...benchStats });
+            wss.clients.forEach(c => {
+                if (c.readyState === WebSocket.OPEN) {
+                    try { c.send(benchMsg); } catch (e) { /* ignore */ }
+                }
+            });
+        }
+    }, 25);
 }
 
 /**
@@ -710,12 +903,12 @@ function startBroadcastLoop() {
 function buildTerritoryBinary() {
     const addedMap = new Map(), removedMap = new Map();
     state.pendingTerritoryUpdates.forEach(update => {
-        if (update.a) update.a.forEach(a => addedMap.set(`${a.x},${a.y}`, a));
-        if (update.r) update.r.forEach(r => removedMap.set(`${r.x},${r.y}`, r));
+        if (update.a) update.a.forEach(a => addedMap.set(a.y * 100000 + a.x, a));
+        if (update.r) update.r.forEach(r => removedMap.set(r.y * 100000 + r.x, r));
     });
 
     const currentKeys = new Set();
-    state.territoryRects.forEach(t => currentKeys.add(`${t.x},${t.y}`));
+    state.territoryRects.forEach(t => currentKeys.add(t.y * 100000 + t.x));
     addedMap.forEach((v, k) => { if (!currentKeys.has(k)) addedMap.delete(k); });
     removedMap.forEach((v, k) => { if (currentKeys.has(k)) removedMap.delete(k); });
 

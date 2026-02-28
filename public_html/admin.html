@@ -132,6 +132,128 @@
             font-size: 0.85rem;
             color: #94a3b8;
         }
+
+        /* ドキュメント表示用 */
+        .doc-selector {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .doc-selector select {
+            padding: 8px 12px;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            background: #1e293b;
+            color: #f1f5f9;
+            font-family: inherit;
+            font-size: 0.95rem;
+            outline: none;
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .doc-meta {
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+
+        .doc-body {
+            line-height: 1.7;
+            font-size: 0.95rem;
+        }
+
+        .doc-body h1 {
+            font-size: 1.5rem;
+            color: var(--accent);
+            border-bottom: 2px solid #475569;
+            padding-bottom: 8px;
+            margin: 20px 0 12px;
+        }
+
+        .doc-body h2 {
+            font-size: 1.25rem;
+            color: #60a5fa;
+            border-bottom: 1px solid #475569;
+            padding-bottom: 6px;
+            margin: 18px 0 10px;
+        }
+
+        .doc-body h3 {
+            font-size: 1.1rem;
+            color: #93c5fd;
+            margin: 14px 0 8px;
+        }
+
+        .doc-body h4 {
+            font-size: 1rem;
+            color: #bfdbfe;
+            margin: 12px 0 6px;
+        }
+
+        .doc-body table {
+            margin: 10px 0;
+        }
+
+        .doc-body code {
+            background: #1e293b;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: #fbbf24;
+        }
+
+        .doc-body pre {
+            background: #1e293b;
+            padding: 14px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 10px 0;
+            border: 1px solid #475569;
+        }
+
+        .doc-body pre code {
+            padding: 0;
+            background: none;
+            color: #e2e8f0;
+        }
+
+        .doc-body ul, .doc-body ol {
+            padding-left: 24px;
+            margin: 8px 0;
+        }
+
+        .doc-body li {
+            margin: 4px 0;
+        }
+
+        .doc-body blockquote {
+            border-left: 3px solid var(--accent);
+            padding-left: 12px;
+            color: #94a3b8;
+            margin: 10px 0;
+        }
+
+        .doc-body strong {
+            color: #f1f5f9;
+        }
+
+        .doc-body hr {
+            border: none;
+            border-top: 1px solid #475569;
+            margin: 20px 0;
+        }
+
+        .doc-body a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .doc-body a:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 
@@ -147,6 +269,7 @@
         <button class="tab-btn" onclick="loadTab('rounds')">🏆 ラウンド履歴</button>
         <button class="tab-btn" onclick="loadTab('players')">👤 プレイヤー統計</button>
         <button class="tab-btn" onclick="loadTab('teams')">🏅 チーム統計</button>
+        <button class="tab-btn" onclick="loadTab('docs')">📄 ドキュメント</button>
         <button class="tab-btn" onclick="loadTab('settings')">⚙️ 設定</button>
         <button class="tab-btn" style="background:#ef4444;" onclick="resetData()">⚠️ データリセット</button>
     </div>
@@ -155,13 +278,14 @@
         <div class="loading">読み込み中...</div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         // APIエンドポイントの自動判定
         // サーバー上(localhostなど)にある場合は相対パス、ローカルファイルの場合は固定URL
         const API_BASE = (location.protocol === 'file:') 
             ? 'http://localhost:2053' 
             : ''; 
-        // const API_BASE = 'https://zin-new.open2ch.net:2053';
+        // const API_BASE = 'https://jintori.open2ch.net:2053';
         let currentTab = 'stats';
         let realtimeInterval = null;
 
@@ -188,7 +312,7 @@
             }
 
             document.querySelectorAll('.tab-btn').forEach((btn, i) => {
-                btn.classList.toggle('active', ['realtime', 'stats', 'rounds', 'players', 'teams', 'settings'][i] === tab);
+                btn.classList.toggle('active', ['realtime', 'stats', 'rounds', 'players', 'teams', 'docs', 'settings'][i] === tab);
             });
 
             const content = document.getElementById('content');
@@ -285,6 +409,9 @@
                     });
                     html += '</tbody></table></div>';
                     content.innerHTML = html;
+
+                } else if (tab === 'docs') {
+                    await loadDocs();
 
                 } else if (tab === 'settings') {
                     content.innerHTML = `
@@ -460,6 +587,21 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="card">
+                    <h3>🤖 スウォームモード（BOT50体連結）</h3>
+                    <div style="display:flex; align-items:center; gap:16px; margin-top:10px;">
+                        <div style="font-size:1.2rem; font-weight:bold; color:${data.swarmMode ? '#22c55e' : '#94a3b8'};">
+                            ${data.swarmMode ? '🟢 ON' : '⚫ OFF'}
+                        </div>
+                        <button onclick="toggleSwarm(${data.swarmMode ? 'false' : 'true'})"
+                            style="padding:10px 24px; border:none; border-radius:8px; cursor:pointer; font-family:inherit; font-size:0.95rem; font-weight:bold;
+                            background:${data.swarmMode ? '#ef4444' : '#22c55e'}; color:white;">
+                            ${data.swarmMode ? '🛑 スウォーム停止' : '🤖 スウォーム起動'}
+                        </button>
+                    </div>
+                    <p style="color:#94a3b8; font-size:0.8rem; margin-top:8px;">50体のBOTが蛇形連結で移動し、敵プレイヤーを攻撃します</p>
+                </div>
                 `;
 
                 content.innerHTML = html;
@@ -467,6 +609,89 @@
                 if (currentTab === 'realtime') {
                     document.getElementById('content').innerHTML = '<div class="error">接続エラー: ' + e.message + '</div>';
                 }
+            }
+        }
+
+        async function loadDocs() {
+            const content = document.getElementById('content');
+            try {
+                const res = await fetch(API_BASE + '/api/docs', { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/admin-login.html'; return; }
+                const files = await res.json();
+
+                if (!files.length) {
+                    content.innerHTML = '<div class="card"><p style="color:#94a3b8;">ドキュメントが見つかりません</p></div>';
+                    return;
+                }
+
+                let html = '<div class="card">';
+                html += '<div class="doc-selector">';
+                html += '<label style="color:#94a3b8; white-space:nowrap;">バージョン:</label>';
+                html += '<select id="doc-select" onchange="loadDocContent(this.value)">';
+                files.forEach((f, i) => {
+                    const date = new Date(f.mtime).toLocaleDateString('ja-JP');
+                    const kb = (f.size / 1024).toFixed(1);
+                    html += `<option value="${f.filename}"${i === 0 ? ' selected' : ''}>${f.filename} (${date}, ${kb}KB)</option>`;
+                });
+                html += '</select>';
+                html += '</div>';
+                html += '<div id="doc-meta" class="doc-meta"></div>';
+                html += '<div id="doc-content" class="doc-body"><div class="loading">読み込み中...</div></div>';
+                html += '</div>';
+                content.innerHTML = html;
+
+                // 最新ファイルを自動表示
+                await loadDocContent(files[0].filename);
+            } catch (e) {
+                content.innerHTML = '<div class="error">ドキュメント読み込みエラー: ' + e.message + '</div>';
+            }
+        }
+
+        async function loadDocContent(filename) {
+            const docContent = document.getElementById('doc-content');
+            const docMeta = document.getElementById('doc-meta');
+            docContent.innerHTML = '<div class="loading">読み込み中...</div>';
+
+            try {
+                const res = await fetch(API_BASE + '/api/docs/' + encodeURIComponent(filename), { credentials: 'include' });
+                if (res.status === 401) { window.location.href = '/admin-login.html'; return; }
+                const data = await res.json();
+
+                if (data.error) {
+                    docContent.innerHTML = '<div class="error">' + data.error + '</div>';
+                    return;
+                }
+
+                const date = new Date(data.mtime).toLocaleString('ja-JP');
+                docMeta.textContent = '最終更新: ' + date;
+
+                if (typeof marked !== 'undefined') {
+                    marked.setOptions({ breaks: true, gfm: true });
+                    docContent.innerHTML = marked.parse(data.content);
+                } else {
+                    docContent.innerHTML = '<pre style="white-space:pre-wrap;">' + data.content.replace(/</g, '&lt;') + '</pre>';
+                }
+            } catch (e) {
+                docContent.innerHTML = '<div class="error">読み込みエラー: ' + e.message + '</div>';
+            }
+        }
+
+        async function toggleSwarm(enabled) {
+            try {
+                const res = await fetch(API_BASE + '/api/admin/swarm-toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ enabled })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    loadRealtime();
+                } else {
+                    alert('エラー: ' + (data.error || '不明なエラー'));
+                }
+            } catch (e) {
+                alert('通信エラー: ' + e.message);
             }
         }
 

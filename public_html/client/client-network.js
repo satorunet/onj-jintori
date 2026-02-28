@@ -25,8 +25,10 @@ function connect() {
         if (data.type === 'init') {
             myId = data.id;
             world = data.world;
+            gridSize = world.gs || 10;
             obstacles = data.obstacles || [];
-            const initTerritories = data.tf || data.territories || [];
+            gears = (data.gears || []).map(g => ({ ...g, startTime: Date.now() }));
+            const initTerritories = data.tf || data.territories || []
             territories = initTerritories.map(normalizeTerritory);
             rebuildTerritoryMap();
             territoryVersion = data.tv || 0;
@@ -47,6 +49,10 @@ function connect() {
         } else if (data.type === 'bot_auth_success') {
             // 認証成功 - サーバー側で自動joinされるのでゲーム開始状態にする
             console.log('[Bot Auth] Authentication successful');
+            // Cookie認証セッションを保存（24時間有効）
+            if (data.sessionToken) {
+                document.cookie = `bot_auth_session=${data.sessionToken}; path=/; max-age=86400; SameSite=Strict`;
+            }
             hideBotAuthDialog();
             document.getElementById('login-modal').style.display = 'none';
             isGameReady = true;
@@ -64,7 +70,8 @@ function connect() {
                         name: p.n || p.name,
                         color: p.c || p.color,
                         emoji: p.e || p.emoji,
-                        team: p.t || p.team
+                        team: p.t || p.team,
+                        scale: p.sc || 1
                     };
 
                     // colorCacheにも登録
@@ -92,34 +99,37 @@ function connect() {
             const scoreboardData = data.sb;
 
             if (scoreboardData) {
-                // スコアボード受信時は全データを更新（古い/切断されたプレイヤーを削除）
-                // ただし、自分自身のスコアが消えると困る場合があるので注意が必要だが、
-                // scorebaordDataには自分も含まれているはず。
-                playerScores = {}; 
-
-                // スコアボード（フルID廃止済み、idは数値のshortId）
+                // スコアボード差分更新（毎回オブジェクト再生成を回避）
+                const activePids = new Set();
                 scoreboardData.forEach(s => {
                     const pid = s.i || s.id;
-                    playerScores[pid] = {
-                        score: s.s !== undefined ? s.s : s.score,
-                        kills: s.k !== undefined ? s.k : s.kills,
-                        name: s.n,
-                        team: s.t,
-                        color: s.c,
-                        emoji: s.e
-                    };
-                    
-                    // プロファイル情報も更新しておく（念のため）
-                    if (s.n) {
-                        playerProfiles[pid] = {
-                            name: s.n,
-                            team: s.t,
-                            color: s.c,
-                            emoji: s.e
+                    activePids.add(pid);
+                    const profile = playerProfiles[pid] || {};
+                    const existing = playerScores[pid];
+                    if (existing) {
+                        existing.score = s.s !== undefined ? s.s : s.score;
+                        existing.kills = s.k !== undefined ? s.k : s.kills;
+                        existing.deaths = s.d !== undefined ? s.d : (existing.deaths || 0);
+                        if (profile.name) existing.name = profile.name;
+                        if (profile.team !== undefined) existing.team = profile.team;
+                        if (profile.color) existing.color = profile.color;
+                        if (profile.emoji) existing.emoji = profile.emoji;
+                    } else {
+                        playerScores[pid] = {
+                            score: s.s !== undefined ? s.s : s.score,
+                            kills: s.k !== undefined ? s.k : s.kills,
+                            deaths: s.d || 0,
+                            name: profile.name || '',
+                            team: profile.team || '',
+                            color: profile.color || '',
+                            emoji: profile.emoji || ''
                         };
-                        colorCache[pid] = s.c;
                     }
                 });
+                // 切断したプレイヤーを削除
+                for (const pid in playerScores) {
+                    if (!activePids.has(Number(pid))) delete playerScores[pid];
+                }
             }
 
             if (data.pc !== undefined) {
@@ -149,6 +159,19 @@ function connect() {
             if (teamsData) {
                 allTeamsData = teamsData;
                 if (!isGameReady) updateTeamSelect();
+            }
+
+            // 歯車占領状態
+            if (data.gc && gears.length > 0) {
+                data.gc.forEach(gc => {
+                    if (gears[gc.i]) {
+                        gears[gc.i].capturePercent = gc.p;
+                        gears[gc.i].captureColor = gc.c;
+                        gears[gc.i].captureName = gc.n;
+                        gears[gc.i].capturedBy = gc.cb;
+                        gears[gc.i].capturedColor = gc.cc;
+                    }
+                });
             }
 
             const detailsIds = new Set();
@@ -197,7 +220,7 @@ function connect() {
                             const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
                             let cx = view.getUint16(0, true);
                             let cy = view.getUint16(2, true);
-                            decodedTrail.push({ x: cx * 10 + 5, y: cy * 10 + 5 });
+                            decodedTrail.push({ x: cx * gridSize + gridSize / 2, y: cy * gridSize + gridSize / 2 });
 
                             const len = Math.floor((buf.byteLength - 4) / 2);
                             for (let i = 0; i < len; i++) {
@@ -205,7 +228,7 @@ function connect() {
                                 const dy = view.getInt8(4 + i * 2 + 1);
                                 cx += dx;
                                 cy += dy;
-                                decodedTrail.push({ x: cx * 10 + 5, y: cy * 10 + 5 });
+                                decodedTrail.push({ x: cx * gridSize + gridSize / 2, y: cy * gridSize + gridSize / 2 });
                             }
                         }
                     } else {
@@ -217,8 +240,8 @@ function connect() {
                             
                             // 最後の座標をグリッド座標に変換
                             const lastPoint = existing.trail[existing.trail.length - 1];
-                            let cx = Math.floor((lastPoint.x - 5) / 10);
-                            let cy = Math.floor((lastPoint.y - 5) / 10);
+                            let cx = Math.floor((lastPoint.x - gridSize / 2) / gridSize);
+                            let cy = Math.floor((lastPoint.y - gridSize / 2) / gridSize);
                             
                             // 差分をデコードして追加
                             const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -228,7 +251,7 @@ function connect() {
                                 const dy = view.getInt8(i * 2 + 1);
                                 cx += dx;
                                 cy += dy;
-                                decodedTrail.push({ x: cx * 10 + 5, y: cy * 10 + 5 });
+                                decodedTrail.push({ x: cx * gridSize + gridSize / 2, y: cy * gridSize + gridSize / 2 });
                             }
                         }
                         // 既存の軌跡がない場合は空のまま（次のフル同期を待つ）
@@ -252,8 +275,17 @@ function connect() {
                     score: serverP.s !== undefined ? serverP.s : (scoreData.score || 0),
                     state: state,
                     invulnerableCount: serverP.iv !== undefined ? serverP.iv : invulnerableCount,
-                    boosting: serverP.bs ? true : false  // ブースト中フラグ
+                    boosting: serverP.bs ? true : false,  // ブースト中フラグ
+                    chainRole: serverP.cr || 0,            // 0=none, 1=leader, 2=follower
+                    chainLeaderId: serverP.cl || null,
+                    chainAnchorX: serverP.cax || 0,
+                    chainAnchorY: serverP.cay || 0
                 });
+
+                // 連結候補（近くのチームメイト）更新
+                if (serverP.i === myId) {
+                    chainNearbyIds = serverP.cn || [];
+                }
 
                 // 自分のブースト情報を更新
                 if (sId === myId) {
@@ -320,6 +352,10 @@ function connect() {
                     
                     existing.trail = normalized.trail;
                     existing.boosting = normalized.boosting;  // ブースト状態をコピー
+                    existing.chainRole = normalized.chainRole;
+                    existing.chainLeaderId = normalized.chainLeaderId;
+                    existing.chainAnchorX = normalized.chainAnchorX;
+                    existing.chainAnchorY = normalized.chainAnchorY;
                     existing.hasDetail = true;
                 } else {
                     normalized.targetX = normalized.x;
@@ -455,6 +491,9 @@ function connect() {
             updateUI(timeData);
             updateLeaderboard();
             if (!isGameReady) updateTeamSelect();
+        } else if (data.type === 'gear_captured') {
+            // 歯車占領メッセージ
+            addKillFeed(`⚙️ ${data.name} が歯車を占領した！`);
         } else if (data.type === 'player_death') {
             if (data.id === myId) showDeathScreen(data.reason);
 
@@ -491,12 +530,52 @@ function connect() {
                 msg = `${pName} が ${data.reason}`;
             }
             addKillFeed(msg);
+
+            // 自軍に関連するイベントを戦歴ログに追加（サーバーと同じ形式）
+            const me2 = players.find(pp => pp.id === myId);
+            if (me2 && me2.team) {
+                const deadTeam = data.team || (p && p.team) || '';
+                const deadShort = pName.replace(/^\[.*?\]\s*/, '');
+                let killerShort = '';
+                let killerTeam = '';
+
+                if (data.reason.startsWith('キル: ')) {
+                    const kFull = data.reason.replace('キル: ', '');
+                    killerShort = kFull.replace(/^\[.*?\]\s*/, '');
+                    const killer = players.find(pp => pp.name === kFull);
+                    if (killer) killerTeam = killer.team || '';
+                    if (!killerTeam) { for (const pid in playerProfiles) { if (playerProfiles[pid].name === kFull) { killerTeam = playerProfiles[pid].team || ''; break; } } }
+                } else if (data.reason.includes('に切られた')) {
+                    const kFull = data.reason.replace('に切られた', '');
+                    killerShort = kFull.replace(/^\[.*?\]\s*/, '');
+                    const killer = players.find(pp => pp.name === kFull);
+                    if (killer) killerTeam = killer.team || '';
+                    if (!killerTeam) { for (const pid in playerProfiles) { if (playerProfiles[pid].name === kFull) { killerTeam = playerProfiles[pid].team || ''; break; } } }
+                } else if (data.reason.includes('に囲まれた')) {
+                    const kFull = data.reason.replace('に囲まれた', '');
+                    killerShort = kFull.replace(/^\[.*?\]\s*/, '');
+                    const killer = players.find(pp => pp.name === kFull);
+                    if (killer) killerTeam = killer.team || '';
+                    if (!killerTeam) { for (const pid in playerProfiles) { if (playerProfiles[pid].name === kFull) { killerTeam = playerProfiles[pid].team || ''; break; } } }
+                }
+
+                if (deadTeam === me2.team) {
+                    if (killerShort) addTeamBattleLog(`💀 ${deadShort} が ${killerShort} に倒された`);
+                    else addTeamBattleLog(`💀 ${deadShort} が ${data.reason}`);
+                }
+                if (killerTeam === me2.team && killerTeam !== deadTeam) {
+                    addTeamBattleLog(`⚔️ ${killerShort} が ${deadShort} を倒した！`);
+                }
+            }
         } else if (data.type === 'round_start') {
             if (data.world) world = data.world;
             hasSentChat = false;
+            clearTeamChat();
+            clearTeamBattleLog();
             hideDeathScreen();
             document.getElementById('result-modal').style.display = 'none';
             obstacles = data.obstacles || [];
+            gears = (data.gears || []).map(g => ({ ...g, startTime: Date.now() }));
 
             playerScores = {};
 
@@ -526,7 +605,6 @@ function connect() {
             });
 
             particles = [];
-            fadeOutLines = [];
 
             if (data.tf && data.tf.length > 0) {
                 territories = data.tf.map(normalizeTerritory);
@@ -570,6 +648,11 @@ function connect() {
             }
         } else if (data.type === 'chat') {
             spawnNicoComment(data.text, data.color, data.name);
+        } else if (data.type === 'team_chat') {
+            appendTeamChatMessage(data.text, data.name, data.color);
+        } else if (data.type === 'team_log_sync') {
+            // リスポーン時のログ同期
+            syncTeamLogs(data.chat || [], data.battle || []);
         }
     };
     socket.onclose = (e) => {
@@ -579,12 +662,17 @@ function connect() {
         } else if (e.code === 4010) {
             // 画面サイズ超過でキック
             alert('画面サイズが大きすぎます。\nスマートフォン、またはブラウザのウィンドウを小さくしてアクセスしてください。');
+        } else if (e.code === 4020) {
+            // 同一IP接続数超過
+            alert('同一端末からの接続は2窓までです。\n他のタブを閉じてから再度アクセスしてください。');
         }
         document.getElementById('login-modal').style.display = 'flex';
         document.getElementById('deathScreen').style.display = 'none';
         document.getElementById('result-modal').style.display = 'none';
         isGameReady = false;
 
+        // 接続数超過の場合は自動再接続しない
+        if (e.code === 4020) return;
         setTimeout(connect, 3000);
     };
 }

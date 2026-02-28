@@ -6,6 +6,7 @@
 const config = require('./config');
 const { fs, path, os, dbPool, PUBLIC_HTML_DIR, MIME_TYPES, GAME_MODES, state, bandwidthStats } = config;
 const adminAuth = require('./admin-auth');
+const cpu = require('./cpu');
 
 /**
  * CORS設定を適用
@@ -334,7 +335,8 @@ async function handleHttpRequest(req, res) {
                     totalBytesReceived: bandwidthStats.totalBytesReceived,
                     periodBytesSent: bandwidthStats.periodBytesSent,
                     periodBytesReceived: bandwidthStats.periodBytesReceived
-                }
+                },
+                swarmMode: state.swarmMode
             };
 
             res.writeHead(200);
@@ -463,6 +465,96 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
+        // API: スウォームモード切替 (認証必須)
+        // ========================================
+        if (urlPath === '/api/admin/swarm-toggle' && req.method === 'POST') {
+            // localhost以外は認証必須
+            const isLocal = req.socket.remoteAddress === '::1' || req.socket.remoteAddress === '127.0.0.1' || req.socket.remoteAddress === '::ffff:127.0.0.1';
+            if (!isLocal) {
+                const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+                if (!adminAuth.validateSession(sessionId)) {
+                    res.writeHead(401);
+                    res.end(JSON.stringify({ error: 'Unauthorized' }));
+                    return;
+                }
+            }
+            try {
+                const body = await readBody(req);
+                const { enabled } = JSON.parse(body);
+                if (enabled) {
+                    cpu.createSwarm();
+                } else {
+                    cpu.destroySwarm();
+                }
+                res.writeHead(200);
+                res.end(JSON.stringify({ success: true, swarmMode: state.swarmMode }));
+            } catch (err) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Bad request: ' + err.message }));
+            }
+            return;
+        }
+
+        // ========================================
+        // API: ドキュメント一覧 (認証必須)
+        // ========================================
+        if (urlPath === '/api/docs') {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
+            const docsDir = path.join(__dirname, '..', 'docs');
+            try {
+                const files = fs.readdirSync(docsDir)
+                    .filter(f => f.endsWith('.md'))
+                    .map(f => {
+                        const stat = fs.statSync(path.join(docsDir, f));
+                        return { filename: f, mtime: stat.mtime, size: stat.size };
+                    })
+                    .sort((a, b) => b.mtime - a.mtime);
+                res.writeHead(200);
+                res.end(JSON.stringify(files));
+            } catch (err) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: err.message }));
+            }
+            return;
+        }
+
+        // ========================================
+        // API: ドキュメント内容取得 (認証必須)
+        // ========================================
+        if (urlPath.startsWith('/api/docs/')) {
+            const sessionId = adminAuth.getSessionFromCookie(req.headers.cookie);
+            if (!adminAuth.validateSession(sessionId)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized' }));
+                return;
+            }
+            const filename = decodeURIComponent(urlPath.slice('/api/docs/'.length));
+            const docsDir = path.join(__dirname, '..', 'docs');
+            const filePath = path.resolve(docsDir, filename);
+            // ディレクトリトラバーサル防止
+            if (!filePath.startsWith(docsDir) || !filePath.endsWith('.md')) {
+                res.writeHead(403);
+                res.end(JSON.stringify({ error: 'Forbidden' }));
+                return;
+            }
+            try {
+                const content = fs.readFileSync(filePath, 'utf-8');
+                const stat = fs.statSync(filePath);
+                res.writeHead(200);
+                res.end(JSON.stringify({ filename, content, mtime: stat.mtime }));
+            } catch (err) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'File not found' }));
+            }
+            return;
+        }
+
+        // ========================================
         // 静的ファイル配信
         // ========================================
         if (fs.existsSync(PUBLIC_HTML_DIR)) {
@@ -499,6 +591,10 @@ async function handleHttpRequest(req, res) {
                 try {
                     const content = fs.readFileSync(filePath);
                     res.setHeader('Content-Type', mimeType);
+                    // JS/CSSはクエリパラメータでキャッシュバスト済みなので短期キャッシュ
+                    if (ext === '.js' || ext === '.css') {
+                        res.setHeader('Cache-Control', 'public, max-age=300');
+                    }
                     res.writeHead(200);
                     res.end(content);
                     return;

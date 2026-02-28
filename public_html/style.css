@@ -332,6 +332,13 @@
         /* Bronze */
 
         /* Settings Buttons */
+        /* 低パフォーマンスモード時: backdrop-filterを無効化 */
+        .low-perf .stat-box,
+        .low-perf #leaderboard {
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+        }
+
         .setting-btn {
             padding: 10px 16px;
             border-radius: 8px;

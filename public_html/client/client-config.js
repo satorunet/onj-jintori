@@ -4,10 +4,10 @@
 
 // Server URL
 //const SERVER_URL = 'wss://new-node01.open2ch.net:2087';
-const SERVER_URL = 'wss://zin-new.open2ch.net:2053';
+const SERVER_URL = 'wss://jintori.open2ch.net:2053';
 
 // API Base
-const API_BASE = 'https://zin-new.open2ch.net:2053';
+const API_BASE = 'https://jintori.open2ch.net:2053';
 
 // Zoom Level
 const ZOOM_LEVEL = 0.8;
@@ -36,12 +36,14 @@ let canvas, ctx, width, height;
 let socket;
 let myId = null;
 let world = { width: 2000, height: 2000 };
+let gridSize = 10;
 let camera = { x: 0, y: 0 };
 let players = [];
 let territories = [];
 let territoryMap = new Map();
 let territoryVersion = 0;
 let obstacles = [];
+let gears = [];
 let isGameReady = false;
 let currentMode = 'SOLO';
 let currentPlayerCount = 0;
@@ -62,7 +64,6 @@ let colorCache = {};
 
 // パーティクル
 let particles = [];
-let fadeOutLines = [];
 
 // チャット
 let hasSentChat = false;
@@ -103,8 +104,8 @@ let lastLoopTime = Date.now();
 // auto: FPSに応じて自動切り替え
 // high: 高品質（shadowBlur有効、スムーズパス）
 // low: 低負荷（shadowBlur無効、シンプルパス）
-let performanceMode = 'auto';
-let isLowPerformance = false;
+let performanceMode = 'low';
+let isLowPerformance = true;
 let forceLowPerformance = false;  // 人数多い時の強制軽量モード
 let fpsHistory = [];
 const FPS_THRESHOLD = 35;  // これ以下で低パフォーマンスモードに切り替え
@@ -239,7 +240,8 @@ function formatRawScore(score) {
     if (!score) return '0.00%';
     const w = (typeof world !== 'undefined' && world && world.width) ? world.width : 3000;
     const h = (typeof world !== 'undefined' && world && world.height) ? world.height : 3000;
-    const totalCells = (w / 10) * (h / 10);
+    const gs = (typeof gridSize !== 'undefined' && gridSize) ? gridSize : 10;
+    const totalCells = (w / gs) * (h / gs);
     let pct = (score / totalCells) * 100;
     if (pct > 100) pct = 100;
     return pct.toFixed(2) + '%';

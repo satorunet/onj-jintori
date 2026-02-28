@@ -40,13 +40,17 @@ const DEBUG_MODE = process.argv.includes('debug') ||
     INNER_DEBUG_MODE;
 
 const FORCE_TEAM = process.argv.includes('team');
+const HUMAN_VS_BOT = process.argv.includes('vsbot');  // 人間 vs BOTモード
 const INFINITE_TIME = process.argv.includes('mugen');
 const STATS_MODE = process.argv.includes('toukei');
+const CHAIN_DEBUG = process.argv.includes('chain_debug');  // 連結デバッグモード
+const HELL_OBSTACLES = false;  // 鬼障害物モード（ON/OFF）
+const GEAR_ENABLED = false;    // 歯車モード（ON/OFF）
 
 // ============================================================
 // サーバー設定
 // ============================================================
-const SERVER_VERSION = '5.0.0'; // 2026-01-06 モジュール分割
+const SERVER_VERSION = '5.1.0'; // 2026-02-25 空間分割最適化・ブロードキャスト高速化・UI改善
 const PORT = 2053;
 const SSL_KEY_PATH = '/var/www/sites/nodejs/ssl/node.open2ch.net/pkey.pem';
 const SSL_CERT_PATH = '/var/www/sites/nodejs/ssl/node.open2ch.net/cert.pem';
@@ -96,15 +100,29 @@ const ADMIN_SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
 // ============================================================
 // ゲーム設定・定数
 // ============================================================
-const GAME_DURATION = (DEBUG_MODE || INFINITE_TIME) ? 999999 : 120; // seconds
+const GAME_DURATION = (DEBUG_MODE || INFINITE_TIME || CHAIN_DEBUG) ? 999999 : 120; // seconds
 const RESPAWN_TIME = 3; // seconds
 const PLAYER_SPEED = 130;
 const BOOST_SPEED_MULTIPLIER = 1.8;  // ブースト時の速度倍率
 const BOOST_DURATION = 2000;         // ブースト持続時間（ミリ秒）
 const BOOST_COOLDOWN = 5000;         // ブーストクールダウン（ミリ秒）
 const GRID_SIZE = 10;
-const AFK_DEATH_LIMIT = 3;
+const NO_SUICIDE = true;  // 自己ライン接触で死なないモード
+const AFK_DEATH_LIMIT = 2;
 const MINIMAP_SIZE = 30;  // 40→30に削減（帯域節約）
+
+// チーム連結モード
+const CHAIN_SPACING = 30;              // 連結メンバー間の距離(px)
+const CHAIN_MAX_LENGTH = Infinity;     // 最大連結人数(無制限)
+const CHAIN_PATH_HISTORY_SIZE = 500;   // リーダーの経路履歴バッファサイズ
+
+// スウォームモード設定（BOT50体連結）
+const SWARM_BOT_COUNT = 50;            // スウォームBOT数
+const SWARM_CHAIN_SPACING = 20;        // スウォーム連結間隔(px)
+const SWARM_TEAM_NAME = '🤖SWARM';    // スウォームチーム名
+const SWARM_TEAM_COLOR = '#ef4444';    // スウォームチーム色（赤）
+const SWARM_ATTACK_RANGE = 200;        // 敵検知距離(px)
+const SWARM_REJOIN_TIMEOUT = 10000;    // 分離後の復帰タイムアウト(ms)
 
 const EMOJIS = ['😀', '😎', '😂', '😍', '🤔', '🤠', '😈', '👻', '👽', '🤖', '💩', '🐱', '🐶', '🦊', '🦁', '🐷', '🦄', '🐲'];
 const GAME_MODES = ['SOLO', 'TEAM'];
@@ -114,8 +132,12 @@ const TEAM_COLORS = {
     'RED': '#ef4444',
     'BLUE': '#3b82f6',
     'GREEN': '#22c55e',
-    'YELLOW': '#eab308'
+    'YELLOW': '#eab308',
+    'HUMAN': '#3b82f6'
 };
+
+// CPU専用チーム名（プレイヤーは参加不可）
+const CPU_TEAM_NAME = '🇯🇵ONJ';
 
 // ============================================================
 // ゲーム状態（可変）- 全モジュールから参照・更新される
@@ -130,6 +152,8 @@ const state = {
     // プレイヤー管理
     players: {},
     roundParticipants: new Set(),
+    teamChatLog: {},    // チーム別チャット履歴
+    teamBattleLog: {},  // チーム別戦歴
 
     // テリトリー管理
     worldGrid: [],
@@ -147,7 +171,7 @@ const state = {
     roundActive: true,
     lastRoundWinner: null,
     lastResultMsg: null,
-    currentModeIdx: FORCE_TEAM ? 1 : 0,
+    currentModeIdx: (FORCE_TEAM || HUMAN_VS_BOT || CHAIN_DEBUG) ? 1 : 0,
 
     // ミニマップ
     minimapBitmapCache: null,
@@ -164,7 +188,13 @@ const state = {
 
     // AFK/Bot認証管理
     afkTimeoutIPs: new Map(),        // Map<IP, timestamp> - AFKタイムアウトしたIPと時刻
-    botChallenges: new Map()          // Map<sessionId, {code: string, timestamp: number}> - 認証チャレンジ
+    botChallenges: new Map(),         // Map<sessionId, {code: string, timestamp: number}> - 認証チャレンジ
+    captchaVerifiedIPs: new Map(),    // Map<IP, timestamp> - CAPTCHA認証済みIP（2回目以降はスキップ）
+    botAuthSessions: new Map(),       // Map<token, {ip, createdAt}> - Cookie認証セッション（24時間有効）
+
+    // スウォームモード
+    swarmMode: false,                // スウォームモード有効/無効
+    swarmLeaderId: null              // スウォームリーダーID
 };
 
 // ============================================================
@@ -250,6 +280,7 @@ function resetBandwidthStats() {
 // ============================================================
 console.log(`[SERVER] Version: ${SERVER_VERSION}`);
 console.log('[SERVER] STATS_MODE:', STATS_MODE, 'DB Pool:', !!dbPool, 'DEBUG:', DEBUG_MODE);
+if (HUMAN_VS_BOT) console.log('[SERVER] HUMAN vs BOT mode enabled');
 
 // ============================================================
 // exports
@@ -278,11 +309,22 @@ module.exports = {
     BOOST_DURATION,
     BOOST_COOLDOWN,
     GRID_SIZE,
+    NO_SUICIDE,
     AFK_DEATH_LIMIT,
     MINIMAP_SIZE,
+    CHAIN_SPACING,
+    CHAIN_MAX_LENGTH,
+    CHAIN_PATH_HISTORY_SIZE,
+    SWARM_BOT_COUNT,
+    SWARM_CHAIN_SPACING,
+    SWARM_TEAM_NAME,
+    SWARM_TEAM_COLOR,
+    SWARM_ATTACK_RANGE,
+    SWARM_REJOIN_TIMEOUT,
     EMOJIS,
     GAME_MODES,
     TEAM_COLORS,
+    CPU_TEAM_NAME,
 
     // 管理者設定
     ADMIN_ACCOUNTS,
@@ -293,8 +335,12 @@ module.exports = {
     DEBUG_MODE,
     INNER_DEBUG_MODE,
     FORCE_TEAM,
+    HUMAN_VS_BOT,
     INFINITE_TIME,
     STATS_MODE,
+    HELL_OBSTACLES,
+    GEAR_ENABLED,
+    CHAIN_DEBUG,
 
     // 状態オブジェクト（参照渡し）
     state,

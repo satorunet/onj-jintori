@@ -340,12 +340,14 @@ function loadSettings() {
     const savedMode = localStorage.getItem('performanceMode');
     if (savedMode && ['auto', 'high', 'low'].includes(savedMode)) {
         performanceMode = savedMode;
-        if (savedMode === 'low') {
-            isLowPerformance = true;
-        } else if (savedMode === 'high') {
+        if (savedMode === 'high') {
             isLowPerformance = false;
+        } else if (savedMode === 'low') {
+            isLowPerformance = true;
         }
+        // autoの場合はFPS監視で自動切り替え（初期値はlow）
     }
+    // savedModeがない場合はデフォルトの'low'のまま
 }
 
 // ページ読み込み時に設定を読み込む
@@ -630,7 +632,7 @@ function updateLoginIcons() {
         const maxIcons = Math.min(currentPlayerCount, 18);
         const displayIds = profileIds.slice(-maxIcons);  // 後ろから（新しい順）
 
-        li.innerHTML = '';
+        const frag = document.createDocumentFragment();
         displayIds.forEach(pid => {
             const profile = playerProfiles[pid];
             if (!profile) return;
@@ -643,8 +645,10 @@ function updateLoginIcons() {
             div.style.cssText = `width:30px; height:30px; border-radius:50%; background-color:${color}; display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; text-shadow:1px 1px 1px #000; box-shadow:0 2px 4px rgba(0,0,0,0.3); cursor:default;`;
             div.textContent = emoji || '😐';
             div.title = name;
-            li.appendChild(div);
+            frag.appendChild(div);
         });
+        li.innerHTML = '';
+        li.appendChild(frag);
         
         // アイコン数と人数の差が大きい場合、古いプロファイルを削除
         if (profileIds.length > currentPlayerCount + 10) {
@@ -693,9 +697,14 @@ function updateTeamSelect() {
 }
 
 function updateUI(time) {
-    const m = Math.floor(time / 60);
-    const s = time % 60;
-    const timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+    let timeStr;
+    if (time >= 86400) {
+        timeStr = '∞';
+    } else {
+        const m = Math.floor(time / 60);
+        const s = time % 60;
+        timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+    }
     document.getElementById('timer').textContent = timeStr;
     document.getElementById('pCount').textContent = currentPlayerCount;
     const me = players.find(p => p.id === myId);
@@ -717,9 +726,12 @@ function updateUI(time) {
     }
 }
 
+// Intl.Segmenterキャッシュ（毎フレーム生成を回避）
+const _segmenter = (typeof Intl !== 'undefined' && Intl.Segmenter) ? new Intl.Segmenter('ja', { granularity: 'grapheme' }) : null;
+
 function updateLeaderboard() {
     const limit = (currentMode === 'SOLO') ? 5 : 2;
-    
+
     // players（AOI内）ではなく、playerScores（全体）を使用
     const allPlayersData = Object.entries(playerScores).map(([pid, data]) => ({
         id: Number(pid),
@@ -735,9 +747,8 @@ function updateLeaderboard() {
         let displayName = p.name || '???';
         // 国旗絵文字対応: Intl.Segmenterでグラフェムクラスタ単位に分割
         let graphemes;
-        if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-            const segmenter = new Intl.Segmenter('ja', { granularity: 'grapheme' });
-            graphemes = [...segmenter.segment(displayName)].map(s => s.segment);
+        if (_segmenter) {
+            graphemes = [..._segmenter.segment(displayName)].map(s => s.segment);
         } else {
             graphemes = Array.from(displayName);
         }
@@ -1304,6 +1315,301 @@ function spawnNicoComment(text, color, name) {
         container.remove();
     }, 5000);
 }
+
+// ============================================
+// チームチャット
+// ============================================
+let teamChatVisible = false;
+let teamChatClosed = true; // 初期はアイコン状態
+let teamChatUnread = 0;
+
+function updateTeamChatVisibility() {
+    const me = players.find(p => p.id === myId);
+    // チームに所属していればactive/dead問わず表示（ラウンド中ずっと残る）
+    const inTeam = me && me.team && me.state !== 'waiting';
+    const el = document.getElementById('team-chat');
+    const badge = document.getElementById('team-chat-badge');
+    if (!el) return;
+
+    if (!inTeam) {
+        if (teamChatVisible) {
+            el.style.display = 'none';
+            teamChatVisible = false;
+        }
+        if (badge) badge.style.display = 'none';
+        return;
+    }
+
+    // ヘッダーにチーム名表示
+    const nameEl = document.getElementById('team-chat-team-name');
+    if (nameEl) nameEl.textContent = me.team || '';
+
+    const shouldShow = !teamChatClosed;
+    if (shouldShow && !teamChatVisible) {
+        el.style.display = 'block';
+        teamChatVisible = true;
+        teamChatUnread = 0;
+        if (badge) badge.style.display = 'none';
+    } else if (!shouldShow) {
+        // 閉じ状態: パネルを非表示にしてバッジのみ
+        if (teamChatVisible) {
+            el.style.display = 'none';
+            teamChatVisible = false;
+        }
+    }
+
+    // 閉じている間は常にバッジアイコン表示（未読あればカウントも）
+    if (teamChatClosed && badge) {
+        badge.style.display = 'flex';
+        const countEl = document.getElementById('team-chat-badge-count');
+        if (countEl) countEl.style.display = teamChatUnread > 0 ? 'flex' : 'none';
+    }
+}
+
+function clearTeamChat() {
+    teamChatClosed = true; // チーム戦参加時はアイコン状態から開始
+    teamChatUnread = 0;
+    teamChatVisible = false;
+    const el = document.getElementById('team-chat');
+    if (el) el.style.display = 'none';
+    const badge = document.getElementById('team-chat-badge');
+    if (badge) badge.style.display = 'none';
+    const msgs = document.getElementById('team-chat-messages');
+    if (msgs) msgs.innerHTML = '';
+}
+
+function closeTeamChat() {
+    teamChatClosed = true;
+    teamChatUnread = 0;
+    const el = document.getElementById('team-chat');
+    if (el) el.style.display = 'none';
+    teamChatVisible = false;
+    // すぐバッジ表示
+    const badge = document.getElementById('team-chat-badge');
+    if (badge) badge.style.display = 'flex';
+    const countEl = document.getElementById('team-chat-badge-count');
+    if (countEl) countEl.style.display = 'none';
+}
+
+function openTeamChat() {
+    teamChatClosed = false;
+    teamChatUnread = 0;
+    const badge = document.getElementById('team-chat-badge');
+    if (badge) badge.style.display = 'none';
+    const el = document.getElementById('team-chat');
+    if (el) {
+        el.style.display = 'block';
+        teamChatVisible = true;
+    }
+}
+
+function appendTeamChatMessage(text, name, color) {
+    const msgs = document.getElementById('team-chat-messages');
+    if (!msgs) return;
+    // チーム名プレフィックス除去（[XXX] を取る）
+    let shortName = (name || '???').replace(/^\[.*?\]\s*/, '');
+    const div = document.createElement('div');
+    div.style.cssText = 'font-size:12px; line-height:1.2;';
+    const nameSpan = document.createElement('span');
+    nameSpan.style.cssText = `color:${color || '#93c5fd'}; font-weight:bold; margin-right:3px;`;
+    nameSpan.textContent = shortName;
+    const textSpan = document.createElement('span');
+    textSpan.style.color = '#e2e8f0';
+    textSpan.textContent = text;
+    div.appendChild(nameSpan);
+    div.appendChild(textSpan);
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    while (msgs.children.length > 20) msgs.removeChild(msgs.firstChild);
+
+    if (teamChatClosed) {
+        teamChatUnread++;
+        const badge = document.getElementById('team-chat-badge');
+        const countEl = document.getElementById('team-chat-badge-count');
+        if (badge) badge.style.display = 'flex';
+        if (countEl) countEl.textContent = teamChatUnread;
+    }
+}
+
+function sendTeamChat() {
+    const input = document.getElementById('team-chat-input');
+    if (!input) return;
+    const text = input.value.trim();
+    if (text.length === 0) return;
+    if (socket && socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: 'team_chat', text }));
+    }
+    input.value = '';
+}
+
+let currentTeamTab = 'chat';
+let teamBattleLog = []; // 戦歴ログ
+
+function switchTeamTab(tab) {
+    currentTeamTab = tab;
+    const tabs = ['chat', 'team', 'log'];
+    tabs.forEach(t => {
+        const tabEl = document.getElementById('tc-tab-' + t);
+        const panel = document.getElementById('tc-panel-' + t);
+        if (tabEl) {
+            tabEl.style.color = t === tab ? '#93c5fd' : '#64748b';
+            tabEl.style.background = t === tab ? 'rgba(59,130,246,0.15)' : 'transparent';
+            tabEl.style.borderBottom = t === tab ? '2px solid #3b82f6' : '2px solid transparent';
+        }
+        if (panel) panel.style.display = t === tab ? '' : 'none';
+    });
+    if (tab === 'team') refreshTeamStats();
+}
+
+function refreshTeamStats() {
+    const panel = document.getElementById('tc-panel-team');
+    if (!panel) return;
+    const me = players.find(p => p.id === myId);
+    if (!me || !me.team) { panel.innerHTML = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">チーム未所属</div>'; return; }
+
+    const gs = (world && world.gs) || 10;
+    const totalCells = ((world && world.width) || 3000) / gs * ((world && world.height) || 3000) / gs;
+    const members = [];
+    for (const pid in playerScores) {
+        const ps = playerScores[pid];
+        if (ps.team === me.team) {
+            members.push({ name: (ps.name || '???').replace(/^\[.*?\]\s*/, ''), score: ps.score || 0, kills: ps.kills || 0, deaths: ps.deaths || 0 });
+        }
+    }
+    members.sort((a, b) => b.score - a.score);
+
+    let html = '<table style="width:100%;font-size:12px;color:#e2e8f0;border-collapse:collapse;">';
+    html += '<tr style="color:#94a3b8;"><th style="text-align:left;padding:1px 2px;">名前</th><th style="width:32px;">占領</th><th style="width:20px;">K</th><th style="width:20px;">D</th></tr>';
+    members.forEach(m => {
+        const pct = totalCells > 0 ? (m.score / totalCells * 100).toFixed(1) + '%' : '0%';
+        html += `<tr><td style="padding:1px 2px;">${m.name}</td><td style="text-align:center;color:#93c5fd;">${pct}</td><td style="text-align:center;">${m.kills}</td><td style="text-align:center;color:#f87171;">${m.deaths}</td></tr>`;
+    });
+    html += '</table>';
+    if (members.length === 0) html = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">メンバーなし</div>';
+    panel.innerHTML = html;
+}
+
+function addTeamBattleLog(msg) {
+    teamBattleLog.push(msg);
+    if (teamBattleLog.length > 50) teamBattleLog.shift();
+    // ログタブが表示中なら即反映
+    if (currentTeamTab === 'log') renderBattleLog();
+}
+
+function renderBattleLog() {
+    const panel = document.getElementById('tc-panel-log');
+    if (!panel) return;
+    if (teamBattleLog.length === 0) {
+        panel.innerHTML = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">戦歴なし</div>';
+        return;
+    }
+    let html = '';
+    for (let i = teamBattleLog.length - 1; i >= 0; i--) {
+        html += `<div style="font-size:12px;color:#cbd5e1;padding:1px 0;border-bottom:1px solid rgba(51,65,85,0.5);">${teamBattleLog[i]}</div>`;
+    }
+    panel.innerHTML = html;
+}
+
+function clearTeamBattleLog() {
+    teamBattleLog = [];
+    const panel = document.getElementById('tc-panel-log');
+    if (panel) panel.innerHTML = '';
+}
+
+function syncTeamLogs(chatLog, battleLog) {
+    // チャット履歴を復元
+    const msgs = document.getElementById('team-chat-messages');
+    if (msgs) {
+        msgs.innerHTML = '';
+        chatLog.forEach(entry => {
+            const div = document.createElement('div');
+            div.style.cssText = 'font-size:12px; line-height:1.2;';
+            const nameSpan = document.createElement('span');
+            nameSpan.style.cssText = `color:${entry.color || '#93c5fd'}; font-weight:bold; margin-right:3px;`;
+            nameSpan.textContent = (entry.name || '???').replace(/^\[.*?\]\s*/, '');
+            const textSpan = document.createElement('span');
+            textSpan.style.color = '#e2e8f0';
+            textSpan.textContent = entry.text;
+            div.appendChild(nameSpan);
+            div.appendChild(textSpan);
+            msgs.appendChild(div);
+        });
+        msgs.scrollTop = msgs.scrollHeight;
+    }
+    // 戦歴ログを復元
+    teamBattleLog = battleLog.slice();
+    renderBattleLog();
+}
+
+// チームチャットドラッグ移動
+(() => {
+    let dragging = false, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+    const getChat = () => document.getElementById('team-chat');
+    const getHeader = () => document.getElementById('team-chat-header');
+
+    function onStart(cx, cy) {
+        const chat = getChat();
+        if (!chat) return;
+        dragging = true;
+        startX = cx;
+        startY = cy;
+        const rect = chat.getBoundingClientRect();
+        const container = document.getElementById('game-container');
+        const cRect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
+        origLeft = rect.left - cRect.left;
+        origTop = rect.top - cRect.top;
+        // absolute positioning に切り替え（right/bottomからleft/topへ）
+        chat.style.left = origLeft + 'px';
+        chat.style.top = origTop + 'px';
+        chat.style.right = 'auto';
+        chat.style.bottom = 'auto';
+        const header = getHeader();
+        if (header) header.style.cursor = 'grabbing';
+    }
+
+    function onMove(cx, cy) {
+        if (!dragging) return;
+        const chat = getChat();
+        if (!chat) return;
+        const container = document.getElementById('game-container');
+        const cRect = container ? container.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+        let newLeft = origLeft + (cx - startX);
+        let newTop = origTop + (cy - startY);
+        // 画面内にクランプ
+        newLeft = Math.max(0, Math.min(cRect.width - chat.offsetWidth, newLeft));
+        newTop = Math.max(0, Math.min(cRect.height - chat.offsetHeight, newTop));
+        chat.style.left = newLeft + 'px';
+        chat.style.top = newTop + 'px';
+    }
+
+    function onEnd() {
+        dragging = false;
+        const header = getHeader();
+        if (header) header.style.cursor = 'grab';
+    }
+
+    document.addEventListener('mousedown', e => {
+        const header = getHeader();
+        if (header && header.contains(e.target) && e.target.tagName !== 'SPAN') {
+            e.preventDefault();
+            onStart(e.clientX, e.clientY);
+        }
+    });
+    document.addEventListener('mousemove', e => { if (dragging) { e.preventDefault(); onMove(e.clientX, e.clientY); } });
+    document.addEventListener('mouseup', () => onEnd());
+
+    document.addEventListener('touchstart', e => {
+        const header = getHeader();
+        if (header && header.contains(e.target) && e.target.tagName !== 'SPAN') {
+            const t = e.touches[0];
+            onStart(t.clientX, t.clientY);
+        }
+    }, { passive: true });
+    document.addEventListener('touchmove', e => {
+        if (dragging) { e.preventDefault(); const t = e.touches[0]; onMove(t.clientX, t.clientY); }
+    }, { passive: false });
+    document.addEventListener('touchend', () => onEnd());
+})();
 
 function updateModeDisplay(mode) {
     if (!mode) return;

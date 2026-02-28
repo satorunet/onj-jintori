@@ -2,10 +2,10 @@
 // client-game.js - ゲームロジック・描画・入力
 // ============================================
 
+// チーム連結モード: 近くのチームメイトID
+let chainNearbyIds = [];
+
 // エフェクト関連（無効化・コード削除済み）
-function spawnCaptureLineEffect(trail, color) { }
-function updateFadeOutLines(dt) { }
-function drawFadeOutLines(ctx) { }
 
 function spawnLineDestroyParticles(trail, color, playerX, playerY) {
     // 軽量モードではパーティクルを生成しない
@@ -76,8 +76,9 @@ function drawParticles(ctx) {
     // 軽量モードではパーティクルを描画しない
     if (isLowPerformance) return;
     
-    particles.forEach(p => {
-        ctx.save();
+    ctx.save();
+    for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
         ctx.globalAlpha = p.life;
 
         if (p.sparkle && Math.random() > 0.5) {
@@ -93,8 +94,8 @@ function drawParticles(ctx) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
         ctx.fill();
-        ctx.restore();
-    });
+    }
+    ctx.restore();
 }
 
 // Input Handling
@@ -142,17 +143,46 @@ function initInput() {
         sendInput();
     };
 
+    // 連結候補タップ判定（スクリーン座標→ワールド座標）
+    function checkChainTap(screenX, screenY) {
+        if (chainNearbyIds.length === 0) return false;
+        const worldX = screenX / ZOOM_LEVEL + camera.x;
+        const worldY = screenY / ZOOM_LEVEL + camera.y;
+        for (const tid of chainNearbyIds) {
+            const t = players.find(p => p.id === tid);
+            if (!t || t.state !== 'active') continue;
+            const d = Math.hypot(worldX - t.x, worldY - t.y);
+            if (d < 40) {
+                // 連結リクエスト送信
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: 'chain_attach', targetId: tid }));
+                }
+                chainNearbyIds = [];
+                return true;
+            }
+        }
+        return false;
+    }
+
     canvas.addEventListener('touchstart', e => {
         e.preventDefault();
         const touchX = e.touches[0].clientX;
         const touchY = e.touches[0].clientY;
-        
+
+        // 連結候補タップ検出
+        if (isGameReady && checkChainTap(touchX, touchY)) return;
+
+        // 連結解除ボタンのタップ検出
+        if (isGameReady && isInChainDetachButtonArea(touchX, touchY)) {
+            triggerChainDetach();
+            return;
+        }
         // ブーストボタンエリアのタップ検出
         if (isGameReady && isInBoostButtonArea(touchX, touchY)) {
             triggerBoost();
             return;  // ブーストボタンタップ時は移動入力しない
         }
-        
+
         handleStart(touchX, touchY);
     }, { passive: false });
 
@@ -167,6 +197,13 @@ function initInput() {
     });
 
     canvas.addEventListener('mousedown', e => {
+        // 連結候補クリック検出（PC用）
+        if (isGameReady && checkChainTap(e.clientX, e.clientY)) return;
+        // 連結解除ボタンのクリック検出（PC用）
+        if (isGameReady && isInChainDetachButtonArea(e.clientX, e.clientY)) {
+            triggerChainDetach();
+            return;
+        }
         // ブーストボタンエリアのクリック検出（PC用）
         if (isGameReady && isInBoostButtonArea(e.clientX, e.clientY)) {
             triggerBoost();
@@ -177,11 +214,44 @@ function initInput() {
     window.addEventListener('mousemove', e => { if (touchStartPos) handleMove(e.clientX, e.clientY); });
     window.addEventListener('mouseup', handleEnd);
     
-    // スペースキーでもブースト発動（PC用）
+    // キーボード操作（PC用）
+    const keysPressed = {};
+    const updateArrowInput = () => {
+        let dx = 0, dy = 0;
+        if (keysPressed['ArrowLeft'])  dx -= 1;
+        if (keysPressed['ArrowRight']) dx += 1;
+        if (keysPressed['ArrowUp'])    dy -= 1;
+        if (keysPressed['ArrowDown'])  dy += 1;
+        if (dx !== 0 || dy !== 0) {
+            inputState.dx = dx;
+            inputState.dy = dy;
+            inputState.drawing = true;
+        } else {
+            inputState.dx = 0;
+            inputState.dy = 0;
+            inputState.drawing = false;
+        }
+        sendInput();
+    };
+
     window.addEventListener('keydown', e => {
-        if (e.code === 'Space' && isGameReady && !e.repeat) {
+        if (!isGameReady) return;
+        if (e.code === 'Space' && !e.repeat) {
             e.preventDefault();
             triggerBoost();
+            return;
+        }
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+            e.preventDefault();
+            keysPressed[e.code] = true;
+            updateArrowInput();
+        }
+    });
+
+    window.addEventListener('keyup', e => {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+            delete keysPressed[e.code];
+            updateArrowInput();
         }
     });
 }
@@ -202,6 +272,18 @@ function triggerBoost() {
     if (boostCooldownSec <= 0 && boostRemainingMs <= 0) {
         boostRequested = true;
         sendInput();
+    }
+}
+
+// 連結解除ボタンエリア判定（HTML要素に移行したため不要だが互換用）
+function isInChainDetachButtonArea(x, y) {
+    return false;
+}
+
+// 連結解除を送信
+function triggerChainDetach() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'chain_detach' }));
     }
 }
 
@@ -280,8 +362,14 @@ function loop() {
         isLowPerformance = (performanceMode === 'low');
     }
 
+    // CSSクラスで低パフォーマンスモードを反映（backdrop-filter等の無効化用）
+    const gc = document.getElementById('game-container');
+    if (gc) {
+        if (isLowPerformance) { if (!gc.classList.contains('low-perf')) gc.classList.add('low-perf'); }
+        else { gc.classList.remove('low-perf'); }
+    }
+
     updateParticles(dt);
-    updateFadeOutLines(dt);
 
     const lerpSpeed = 12;
     players.forEach(p => {
@@ -306,14 +394,12 @@ function loop() {
                     p.pixelTrail.push({ x: p.x, y: p.y });
 
                     const maxLen = Math.max(100, p.trail.length * 3);
-                    if (p.pixelTrail.length > maxLen) {
-                        p.pixelTrail.shift();
+                    // shift()はO(n)なので、2倍を超えたら一括でslice（頻度を下げる）
+                    if (p.pixelTrail.length > maxLen * 2) {
+                        p.pixelTrail = p.pixelTrail.slice(-maxLen);
                     }
                 }
             } else {
-                if (p.pixelTrail && p.pixelTrail.length >= 2) {
-                    spawnCaptureLineEffect(p.pixelTrail, p.color);
-                }
                 p.pixelTrail = [];
             }
         }
@@ -376,6 +462,149 @@ function loop() {
         ctx.strokeRect(o.x, o.y, o.width, o.height);
     });
 
+    // 回転歯車の描画
+    const gearNow = Date.now();
+    gears.forEach(g => {
+        // 画面外判定
+        if (g.cx + g.radius < viewLeft || g.cx - g.radius > viewRight ||
+            g.cy + g.radius < viewTop || g.cy - g.radius > viewBottom) return;
+
+        const elapsed = (gearNow - g.startTime) / 1000;
+        const angle = g.angle + g.speed * elapsed;
+        const isCaptured = !!g.capturedBy;
+        const capColor = g.capturedColor || null;
+        const capPercent = g.capturePercent || 0;
+        const capName = g.captureName || '';
+        const progressColor = g.captureColor || null;
+
+        ctx.save();
+        ctx.translate(g.cx, g.cy);
+        ctx.rotate(angle);
+
+        const r = g.radius;
+        const teeth = g.teeth;
+        const tw = g.toothWidth || 0.2;
+        const safeR = r * 0.45;
+
+        // 歯の色（占領済みなら占領色）
+        const armFill = isCaptured ? capColor : '#4a5568';
+        const armStroke = isCaptured ? capColor : '#718096';
+        const tipFill = isCaptured ? capColor : '#5a6577';
+
+        // 各歯をアーム状に描画
+        for (let i = 0; i < teeth; i++) {
+            const aStart = (i / teeth) * Math.PI * 2;
+            const aEnd = aStart + (tw / teeth) * Math.PI * 2 * teeth;
+            const armWidth = r * 0.12;
+            const aMid = (aStart + aEnd) / 2;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(aMid - armWidth / r) * safeR, Math.sin(aMid - armWidth / r) * safeR);
+            ctx.lineTo(Math.cos(aStart) * r * 1.05, Math.sin(aStart) * r * 1.05);
+            ctx.lineTo(Math.cos(aEnd) * r * 1.05, Math.sin(aEnd) * r * 1.05);
+            ctx.lineTo(Math.cos(aMid + armWidth / r) * safeR, Math.sin(aMid + armWidth / r) * safeR);
+            ctx.closePath();
+            ctx.globalAlpha = isCaptured ? 0.8 : 1;
+            ctx.fillStyle = armFill;
+            ctx.fill();
+            ctx.strokeStyle = armStroke;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+
+            // 歯の先端
+            ctx.beginPath();
+            const tipStart = aStart - 0.05;
+            const tipEnd = aEnd + 0.05;
+            ctx.arc(0, 0, r * 1.05, tipStart, tipEnd);
+            ctx.arc(0, 0, r * 0.85, tipEnd, tipStart, true);
+            ctx.closePath();
+            ctx.globalAlpha = isCaptured ? 0.8 : 1;
+            ctx.fillStyle = tipFill;
+            ctx.fill();
+            ctx.strokeStyle = armStroke;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        // 回転を戻してから中心エリアを描画（テキストが回転しないように）
+        ctx.restore();
+        ctx.save();
+        ctx.translate(g.cx, g.cy);
+
+        if (isCaptured) {
+            // 占領済み: 中心に薄く占領色の円 + 占領者名
+            ctx.beginPath();
+            ctx.arc(0, 0, safeR, 0, Math.PI * 2);
+            ctx.fillStyle = capColor;
+            ctx.globalAlpha = 0.15;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.setLineDash([8, 8]);
+            ctx.strokeStyle = capColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 占領者名
+            ctx.fillStyle = capColor;
+            ctx.font = getGameFont(Math.max(14, safeR * 0.2), true);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.globalAlpha = 0.7;
+            ctx.fillText(g.capturedBy || '', 0, 0);
+            ctx.globalAlpha = 1;
+        } else if (capPercent > 0 && progressColor) {
+            // 占領途中: 円グラフ進捗 + パーセンテージ
+            // 進捗円弧
+            const progressAngle = (capPercent / 100) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, safeR * 0.9, -Math.PI / 2, -Math.PI / 2 + progressAngle);
+            ctx.closePath();
+            ctx.fillStyle = progressColor;
+            ctx.globalAlpha = 0.25;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+
+            // 外枠の点線
+            ctx.beginPath();
+            ctx.arc(0, 0, safeR, 0, Math.PI * 2);
+            ctx.setLineDash([8, 8]);
+            ctx.strokeStyle = progressColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // パーセンテージテキスト
+            ctx.fillStyle = progressColor;
+            ctx.font = getGameFont(Math.max(16, safeR * 0.3), true);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${capPercent}%`, 0, -safeR * 0.1);
+
+            // 占領者名
+            if (capName) {
+                ctx.font = getGameFont(Math.max(11, safeR * 0.15));
+                ctx.globalAlpha = 0.7;
+                ctx.fillText(capName, 0, safeR * 0.2);
+                ctx.globalAlpha = 1;
+            }
+        } else {
+            // 未占領: 薄い点線の円のみ
+            ctx.beginPath();
+            ctx.arc(0, 0, safeR, 0, Math.PI * 2);
+            ctx.setLineDash([8, 8]);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        ctx.restore();
+    });
+
+    // 領地を色ごとにグループ化して描画
     const territoryGroups = {};
     territories.forEach(t => {
         const k = t.color || '#cccccc';
@@ -389,15 +618,12 @@ function loop() {
         group.forEach(t => {
             if (t.points && t.points.length > 0) {
                 if (t.x + t.w < viewLeft || t.x > viewRight || t.y + t.h < viewTop || t.y > viewBottom) return;
-
                 hasVisible = true;
                 ctx.moveTo(t.points[0].x, t.points[0].y);
                 for (let i = 1; i < t.points.length; i++) ctx.lineTo(t.points[i].x, t.points[i].y);
             }
         });
-
         if (!hasVisible) return;
-
         ctx.save();
         ctx.globalAlpha = 0.3;
         ctx.fillStyle = color;
@@ -408,6 +634,56 @@ function loop() {
         ctx.fill();
         ctx.restore();
     });
+
+    // チェーン接続線の描画
+    (() => {
+        const leaders = players.filter(p => p.chainRole === 1 && p.state === 'active');
+        leaders.forEach(leader => {
+            const followers = players
+                .filter(p => p.chainRole === 2 && p.chainLeaderId === leader.id && p.state === 'active')
+                .sort((a, b) => {
+                    const da = (a.x - leader.x) ** 2 + (a.y - leader.y) ** 2;
+                    const db = (b.x - leader.x) ** 2 + (b.y - leader.y) ** 2;
+                    return da - db;
+                });
+            if (followers.length === 0) return;
+            const chain = [leader, ...followers];
+
+            // 光る接続線
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(chain[0].x, chain[0].y);
+            for (let i = 1; i < chain.length; i++) ctx.lineTo(chain[i].x, chain[i].y);
+            ctx.strokeStyle = leader.color || '#ffffff';
+            ctx.lineWidth = 6;
+            ctx.globalAlpha = 0.3;
+            if (!isLowPerformance) { ctx.shadowColor = leader.color || '#ffffff'; ctx.shadowBlur = 15; }
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // 白い点線
+            ctx.beginPath();
+            ctx.moveTo(chain[0].x, chain[0].y);
+            for (let i = 1; i < chain.length; i++) ctx.lineTo(chain[i].x, chain[i].y);
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.6;
+            ctx.setLineDash([8, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+
+            // フォロワーに🔗表示
+            followers.forEach(f => {
+                ctx.save();
+                ctx.translate(f.x, f.y);
+                ctx.font = 'bold 10px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('🔗', 0, -25);
+                ctx.restore();
+            });
+        });
+    })();
 
     players.forEach(p => {
         // waiting状態、名前がない(Unknown)、座標が0,0のプレイヤーは表示しない
@@ -549,16 +825,17 @@ function loop() {
                     ctx.strokeStyle = '#ffff00';
                 } else {
                     const hue = (Date.now() / 5) % 360;
-                    // 虹色グラデーション
+                    // 虹色グラデーション（hslテーブルキャッシュ）
+                    const h0 = hue | 0, h1 = (hue + 100) % 360 | 0, h2 = (hue + 200) % 360 | 0;
                     const rainbowGradient = ctx.createLinearGradient(
                         points[0].x, points[0].y,
                         points[points.length - 1].x, points[points.length - 1].y
                     );
-                    rainbowGradient.addColorStop(0, `hsl(${hue}, 100%, 60%)`);
-                    rainbowGradient.addColorStop(0.5, `hsl(${(hue + 100) % 360}, 100%, 60%)`);
-                    rainbowGradient.addColorStop(1, `hsl(${(hue + 200) % 360}, 100%, 60%)`);
+                    rainbowGradient.addColorStop(0, `hsl(${h0},100%,60%)`);
+                    rainbowGradient.addColorStop(0.5, `hsl(${h1},100%,60%)`);
+                    rainbowGradient.addColorStop(1, `hsl(${h2},100%,60%)`);
                     ctx.strokeStyle = rainbowGradient;
-                    ctx.shadowColor = `hsl(${hue}, 100%, 50%)`;
+                    ctx.shadowColor = `hsl(${h0},100%,50%)`;
                     ctx.shadowBlur = 25;
                 }
             } else {
@@ -579,6 +856,8 @@ function loop() {
 
         ctx.save();
         ctx.translate(p.x, p.y);
+        const pScale = p.scale || 1;
+        if (pScale !== 1) ctx.scale(pScale, pScale);
 
         if (p.invulnerableCount > 0) {
             ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 50) * 0.4;
@@ -659,14 +938,41 @@ function loop() {
         ctx.restore();
     });
 
-    drawFadeOutLines(ctx);
     drawParticles(ctx);
+
+    // 連結候補リング表示
+    if (chainNearbyIds.length > 0) {
+        const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+        chainNearbyIds.forEach(tid => {
+            const t = players.find(pp => pp.id === tid);
+            if (!t || t.state !== 'active') return;
+            ctx.save();
+            ctx.translate(t.x, t.y);
+            // 脈動するリング
+            ctx.beginPath();
+            ctx.arc(0, 0, 25 + pulse * 5, 0, Math.PI * 2);
+            ctx.strokeStyle = '#00ff88';
+            ctx.lineWidth = 3;
+            ctx.globalAlpha = 0.6 + pulse * 0.3;
+            ctx.shadowColor = '#00ff88';
+            ctx.shadowBlur = 15;
+            ctx.stroke();
+            // 🔗アイコン
+            ctx.shadowBlur = 0;
+            ctx.globalAlpha = 1;
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('🔗', 0, -35);
+            ctx.restore();
+        });
+    }
 
     ctx.restore();
 
     // ブーストゲージUI
     if (isGameReady) {
         drawBoostGauge(ctx);
+        updateChainDetachBadge();
     }
 
     const now = Date.now();
@@ -675,6 +981,13 @@ function loop() {
     if (now - lastMinimapTime > minimapInterval) {
         drawMinimap();
         lastMinimapTime = now;
+    }
+
+    // チームチャット表示切替＋戦績タブ更新
+    updateTeamChatVisibility();
+    if (teamChatVisible && now - (window._lastTeamStatsRefresh || 0) > 2000) {
+        window._lastTeamStatsRefresh = now;
+        if (currentTeamTab === 'team') refreshTeamStats();
     }
 
     requestAnimationFrame(loop);
@@ -786,6 +1099,18 @@ function drawBoostGauge(ctx) {
     ctx.restore();
 }
 
+// 連結解除バッジの表示/非表示を更新
+function updateChainDetachBadge() {
+    const badge = document.getElementById('chain-detach-badge');
+    if (!badge) return;
+    const me = players.find(p => p.id === myId);
+    if (me && me.chainRole !== 0) {
+        badge.style.display = 'flex';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
 const minimapCanvas = document.getElementById('minimap');
 const minimapCtx = minimapCanvas.getContext('2d');
 
@@ -821,16 +1146,18 @@ function drawMinimap() {
             const visW = Math.max(drawW, 0.5);
             const visH = Math.max(drawH, 0.5);
 
-            if (t.color) {
+            const me2 = players.find(p => p.id === myId);
+            const myTeam2 = me2 ? me2.team : null;
+            const isMyTerritory = (t.ownerId === myId) || (myTeam2 && players.find(p => p.id === t.ownerId && p.team === myTeam2));
+            if (!myTeam2 && isMyTerritory) {
+                minimapCtx.fillStyle = '#ff69b4';
+            } else if (t.color) {
                 minimapCtx.fillStyle = t.color;
-                minimapCtx.fillRect(drawX, drawY, visW, visH);
             } else {
                 const owner = Object.values(players).find(p => p.id === t.ownerId);
-                if (owner) {
-                    minimapCtx.fillStyle = owner.color;
-                    minimapCtx.fillRect(drawX, drawY, visW, visH);
-                }
+                minimapCtx.fillStyle = owner ? owner.color : '#cccccc';
             }
+            minimapCtx.fillRect(drawX, drawY, visW, visH);
         });
     }
 
