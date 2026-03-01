@@ -300,6 +300,18 @@ function initInput() {
             triggerBoost();
             return;
         }
+        if (e.code === 'Enter' && !e.repeat) {
+            // テキスト入力中は無視
+            const tag = document.activeElement && document.activeElement.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            e.preventDefault();
+            // 連結候補がいればEnterで連結
+            if (chainNearbyIds.length > 0 && socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: 'chain_attach', targetId: chainNearbyIds[0] }));
+                chainNearbyIds = [];
+            }
+            return;
+        }
         if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
             e.preventDefault();
             keysPressed[e.code] = true;

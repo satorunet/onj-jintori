@@ -147,53 +147,85 @@ function getHueFromHex(hex) {
     return h * 360;
 }
 
-// 色相を均等分割した固定パレット（ピンク320-340を除外）
-// 色相環を最大距離で巡回する順序: 0°, 180°, 90°, 270°, 45°, 225°, 135°, 315°, ...
-const _COLOR_HUES = (function() {
-    const hues = [0]; // 赤(0°)を起点に含める
-    // ビット反転風の順序で色相を最大分散配置
-    // 段階的に分割: 1/2, 1/4, 1/8, ... の位置を順に追加
-    for (let step = 2; step <= 32; step *= 2) {
-        for (let i = 1; i < step; i += 2) {
-            const h = Math.round((i / step) * 360) % 360;
-            // ピンク帯(320-340)を除外
-            if (h >= 320 && h <= 340) continue;
-            if (!hues.includes(h)) hues.push(h);
+// 64色固定パレット（5.625°間隔、彩度・明度を色相ごとに調整して視認性確保）
+const PALETTE_SIZE = 64;
+const COLOR_PALETTE = (function() {
+    const defs = [];
+    for (let i = 0; i < PALETTE_SIZE; i++) {
+        const h = (i * 360 / PALETTE_SIZE) % 360;
+        let s = 80, l = 55;
+        if (h >= 48 && h <= 96) { s = 85; l = 45; }
+        if (h >= 216 && h <= 276) { s = 75; l = 60; }
+        defs.push(_hslToHex(h, s, l));
+    }
+    return defs;
+})();
+const _PALETTE_HUES = Array.from({ length: PALETTE_SIZE }, (_, i) => (i * 360 / PALETTE_SIZE) % 360);
+const MIN_HUE_DIST = 30;
+
+// 色相距離を計算（0-180）
+function _hueDist(a, b) {
+    let d = Math.abs(a - b);
+    return d > 180 ? 360 - d : d;
+}
+
+// 既存色リストとの最小色相距離を返す
+function _minHueDist(hue, existingHues) {
+    let min = 360;
+    for (const eh of existingHues) {
+        const d = _hueDist(hue, eh);
+        if (d < min) min = d;
+    }
+    return min;
+}
+
+// ランダムにパレットから選び、既存色と近すぎたら別の色にする
+function _pickFromPalette(existingHues) {
+    if (existingHues.length === 0) {
+        return COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+    }
+    // シャッフルしたインデックスで試行
+    const indices = Array.from({ length: PALETTE_SIZE }, (_, i) => i);
+    for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [indices[i], indices[j]] = [indices[j], indices[i]];
+    }
+    // MIN_HUE_DIST以上離れた色を探す
+    for (const idx of indices) {
+        if (_minHueDist(_PALETTE_HUES[idx], existingHues) >= MIN_HUE_DIST) {
+            return COLOR_PALETTE[idx];
         }
     }
-    return hues;
-})();
-
-function getUniqueColor() {
-    const playerList = Object.values(state.players);
-    if (playerList.length === 0) {
-        return _hslToHex(_COLOR_HUES[0], 85, 60);
+    // 全部近い場合（30人超）→ 最も離れた色を選ぶ
+    let bestIdx = indices[0], bestDist = -1;
+    for (const idx of indices) {
+        const d = _minHueDist(_PALETTE_HUES[idx], existingHues);
+        if (d > bestDist) { bestDist = d; bestIdx = idx; }
     }
-    const existingHues = playerList
+    return COLOR_PALETTE[bestIdx];
+}
+
+// チーム色を取得
+function getTeamColor(teamName) {
+    if (TEAM_COLORS[teamName]) return TEAM_COLORS[teamName];
+    const teammate = Object.values(state.players).find(p => p.team === teamName && p.color);
+    if (teammate) return teammate.color;
+    // 他チームの色を収集（チーム単位で1色）
+    const teamColorMap = new Map();
+    Object.values(state.players).forEach(p => {
+        if (p.team && p.color && !teamColorMap.has(p.team)) {
+            teamColorMap.set(p.team, getHueFromHex(p.color));
+        }
+    });
+    return _pickFromPalette(Array.from(teamColorMap.values()));
+}
+
+// 個人色を取得
+function getUniqueColor() {
+    const existingHues = Object.values(state.players)
         .filter(p => p.color)
         .map(p => getHueFromHex(p.color));
-
-    // 固定パレットから既存色と最も離れた色相を選ぶ
-    let bestHue = _COLOR_HUES[0];
-    let maxMinDist = -1;
-
-    for (const h of _COLOR_HUES) {
-        let minDist = 360;
-        for (const eh of existingHues) {
-            let diff = Math.abs(h - eh);
-            if (diff > 180) diff = 360 - diff;
-            if (diff < minDist) minDist = diff;
-        }
-        if (minDist > maxMinDist) {
-            maxMinDist = minDist;
-            bestHue = h;
-        }
-    }
-
-    // 彩度・明度に少しランダム幅を持たせて単調にならないようにする
-    const s = Math.floor(Math.random() * 10) + 80;
-    const l = Math.floor(Math.random() * 10) + 55;
-    return _hslToHex(bestHue, s, l);
+    return _pickFromPalette(existingHues);
 }
 
 function _hslToHex(h, s, l) {
@@ -448,7 +480,7 @@ function broadcast(msg) {
 // チーム統計
 // ============================================================
 function getTeamStats() {
-    const counts = {};
+    const counts = { '🇯🇵たぬき': 0 };   // 「🇯🇵たぬき」は常に表示
     Object.values(state.players).forEach(p => {
         const t = p.requestedTeam || p.team;
         if (t) counts[t] = (counts[t] || 0) + 1;
@@ -526,72 +558,6 @@ function generateMinimapBitmap() {
     }
     
     return { bm: compressed, cp: usedPalette, sz: MINIMAP_SIZE, flags: flags };
-}
-
-// ============================================================
-// ミニマップ履歴管理
-// ============================================================
-const MINIMAP_HISTORY_INTERVAL = 20000;  // 20秒ごとにスナップショット保存
-
-/**
- * ミニマップ履歴にスナップショットを追加
- */
-function saveMinimapSnapshot() {
-    const now = Date.now();
-    
-    // 最後の保存から20秒以上経過しているか確認
-    if (now - state.lastMinimapHistoryTime < MINIMAP_HISTORY_INTERVAL) {
-        return;
-    }
-    
-    // ミニマップデータを生成
-    const minimapData = generateMinimapBitmap();
-    
-    // 経過時間を計算（ゲーム開始からの秒数）
-    const mode = GAME_MODES[state.currentModeIdx];
-    const totalDuration = (mode === 'TEAM') ? GAME_DURATION + 120 : GAME_DURATION;
-    const elapsedSeconds = totalDuration - state.timeRemaining;
-    
-    // 履歴に追加
-    state.minimapHistory.push({
-        time: elapsedSeconds,
-        bm: minimapData.bm.toString('base64'),  // Base64エンコード
-        cp: minimapData.cp,
-        sz: minimapData.sz,
-        flags: minimapData.flags || []
-    });
-    
-    state.lastMinimapHistoryTime = now;
-}
-
-/**
- * ミニマップ履歴をクリア（新ラウンド開始時）
- */
-function clearMinimapHistory() {
-    state.minimapHistory = [];
-    state.lastMinimapHistoryTime = 0;
-}
-
-/**
- * ミニマップ履歴を取得
- */
-function getMinimapHistory() {
-    // 最終状態も追加
-    const minimapData = generateMinimapBitmap();
-    const mode = GAME_MODES[state.currentModeIdx];
-    const totalDuration = (mode === 'TEAM') ? GAME_DURATION + 120 : GAME_DURATION;
-    const elapsedSeconds = totalDuration - state.timeRemaining;
-    
-    const history = [...state.minimapHistory];
-    history.push({
-        time: elapsedSeconds,
-        bm: minimapData.bm.toString('base64'),
-        cp: minimapData.cp,
-        sz: minimapData.sz,
-        flags: minimapData.flags || []
-    });
-    
-    return history;
 }
 
 // ============================================================
@@ -1098,11 +1064,9 @@ module.exports = {
     // 設定用
     setWss, setMsgpack, setKillPlayer,
     // ヘルパー
-    generateId, getUniqueColor, getRandomEmoji, toGrid, getDistSq, formatBytes, formatTime, generateShortId,
+    generateId, getUniqueColor, getTeamColor, getRandomEmoji, toGrid, getDistSq, formatBytes, formatTime, generateShortId,
     // ゲームロジック
     initGrid, rebuildTerritoryRects, broadcast, getTeamStats, generateMinimapBitmap, calculateMapFlags, attemptCapture,
-    // ミニマップ履歴
-    saveMinimapSnapshot, clearMinimapHistory, getMinimapHistory,
     // DB
     saveRankingsToDB, initDB,
     // 定数参照

@@ -7,7 +7,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>onj-Jintori(新鯖)</title>
-    <link rel="stylesheet" href="style.css?v=2602282306">
+    <link rel="stylesheet" href="style.css?v=2603010135">
     <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
 </head>
 
@@ -167,15 +167,6 @@
             <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:10px;">
                 <canvas id="result-map" width="300" height="300"
                     style="background:rgba(0,0,0,0.5); border:1px solid #475569; width:200px; height:200px;"></canvas>
-                <div id="history-slider-container" style="width:200px; margin-top:5px; display:none;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span id="history-time-display" style="font-size:11px; color:#94a3b8; min-width:35px;">0:00</span>
-                        <input type="range" id="history-slider" min="0" max="100" value="100" 
-                            style="flex:1; height:6px; cursor:pointer; accent-color:#3b82f6;">
-                        <button id="history-play-btn" onclick="toggleHistoryPlayback()" 
-                            style="padding:2px 8px; background:#3b82f6; border:none; color:#fff; border-radius:4px; cursor:pointer; font-size:11px;">⏸</button>
-                    </div>
-                </div>
             </div>
             <div style="max-height: 500px; overflow-y: auto;">
                 <div style="display:flex; flex-direction:column; gap:15px;">
@@ -240,7 +231,7 @@
             </div>
             <div id="timer">2:00</div>
             <canvas id="minimap" width="54" height="54"
-                style="background:rgba(0,0,0,0.5); border:1px solid #475569; border-radius:4px; margin-left:10px;"></canvas>
+                style="width:54px; height:54px; background:rgba(0,0,0,0.5); border:1px solid #475569; border-radius:4px; margin-left:10px; align-self:center;"></canvas>
         </div>
 
         <div id="leaderboard">
@@ -408,10 +399,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
     <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2602282306"></script>
-    <script src="client/client-network.js?v=2602282306"></script>
-    <script src="client/client-game.js?v=2602282306"></script>
-    <script src="client/client-ui.js?v=2602282306"></script>
+    <script src="client/client-config.js?v=2603010135"></script>
+    <script src="client/client-network.js?v=2603010135"></script>
+    <script src="client/client-game.js?v=2603010135"></script>
+    <script src="client/client-ui.js?v=2603010135"></script>
 </body>
 
 </html>

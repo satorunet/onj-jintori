@@ -892,55 +892,7 @@ function drawMinimapOnCanvas(ctx, data, w, h) {
     } catch (e) { console.error('Render error:', e); }
 }
 
-/**
- * ミニマップ履歴のフレームを描画
- */
-function renderMinimapHistoryFrame(index) {
-    const history = window.minimapHistoryData;
-    if (!history || index < 0 || index >= history.length) return;
-    
-    const frame = history[index];
-    const rCanvas = document.getElementById('result-map');
-    const rCtx = rCanvas.getContext('2d');
-    const timeDisplay = document.getElementById('history-time-display');
-    
-    // 時間表示を更新
-    const time = frame.time || 0;
-    const min = Math.floor(time / 60);
-    const sec = time % 60;
-    timeDisplay.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
-    
-    // ミニマップを描画
-    drawMinimapOnCanvas(rCtx, frame, rCanvas.width, rCanvas.height);
-    
-    // 国旗を描画（もしあれば）
-    if (frame.flags && frame.flags.length > 0) {
-        // フラグの座標はワールド座標なので、ワールドサイズで割ってキャンバス座標に変換
-        const worldWidth = world.width || 3000;
-        const worldHeight = world.height || 3000;
-        
-        rCtx.font = '14px sans-serif';
-        rCtx.textAlign = 'center';
-        rCtx.textBaseline = 'middle';
-        
-        frame.flags.forEach(flagData => {
-            const centerX = (flagData.x / worldWidth) * rCanvas.width;
-            const centerY = (flagData.y / worldHeight) * rCanvas.height;
-            rCtx.fillText(flagData.f, centerX, centerY);
-        });
-    }
-}
-
-/**
- * ミニマップ履歴再生の再生/一時停止切り替え
- */
-function toggleHistoryPlayback() {
-    const playBtn = document.getElementById('history-play-btn');
-    window.minimapHistoryPlaying = !window.minimapHistoryPlaying;
-    playBtn.textContent = window.minimapHistoryPlaying ? '⏸' : '▶';
-}
-
-function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, totalPlayers, historyMinimap, mapFlags, secondsUntilNext, minimapHistory) {
+function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, totalPlayers, finalMinimap, mapFlags, secondsUntilNext) {
     const modal = document.getElementById('result-modal');
     const tbody = document.getElementById('result-body');
     const title = document.getElementById('result-title');
@@ -963,87 +915,14 @@ function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, to
     const rCanvas = document.getElementById('result-map');
     const rCtx = rCanvas.getContext('2d');
     
-    // 前回のタイマーをクリア
-    if (window.minimapHistoryTimer) {
-        clearInterval(window.minimapHistoryTimer);
-        window.minimapHistoryTimer = null;
-    }
-    if (window.replayTimer) clearTimeout(window.replayTimer);
-    
-    // ミニマップ履歴スライダーコンテナ（HTMLで定義済み）
-    const historySliderContainer = document.getElementById('history-slider-container');
-    
-    // ミニマップ履歴がある場合
-    if (minimapHistory && minimapHistory.length > 0) {
-        window.minimapHistoryData = minimapHistory;
-        window.minimapHistoryIndex = minimapHistory.length - 1;  // 最後から開始
-        window.minimapHistoryPlaying = true;
-        window.minimapHistoryUserInteracted = false;
-        window.minimapHistoryDirection = -1;  // -1: 逆方向から開始
-        
-        const slider = document.getElementById('history-slider');
-        const timeDisplay = document.getElementById('history-time-display');
-        const playBtn = document.getElementById('history-play-btn');
-        
-        slider.max = minimapHistory.length - 1;
-        slider.value = minimapHistory.length - 1;  // 最後から開始
-        historySliderContainer.style.display = 'block';
-        
-        // 最後のフレームを描画
-        renderMinimapHistoryFrame(minimapHistory.length - 1);
-        
-        // 軽量モードの場合はスライダーを非表示にしてアニメーションしない
-        if (isLowPerformance) {
-            window.minimapHistoryPlaying = false;
-            historySliderContainer.style.display = 'none';
-        } else {
-            // スライダーイベント
-            slider.oninput = function() {
-                window.minimapHistoryUserInteracted = true;
-                window.minimapHistoryPlaying = false;
-                playBtn.textContent = '▶';
-                const idx = parseInt(this.value);
-                window.minimapHistoryIndex = idx;
-                renderMinimapHistoryFrame(idx);
-            };
-            
-            // 自動再生（400ms間隔で往復再生）
-            window.minimapHistoryTimer = setInterval(() => {
-                if (!window.minimapHistoryPlaying) return;
-                
-                // 次のフレームへ
-                window.minimapHistoryIndex += window.minimapHistoryDirection;
-                
-                // 端に達したら方向を反転
-                if (window.minimapHistoryIndex >= minimapHistory.length - 1) {
-                    window.minimapHistoryIndex = minimapHistory.length - 1;
-                    window.minimapHistoryDirection = -1;  // 逆方向へ
-                } else if (window.minimapHistoryIndex <= 0) {
-                    window.minimapHistoryIndex = 0;
-                    window.minimapHistoryDirection = 1;   // 順方向へ
-                }
-                
-                slider.value = window.minimapHistoryIndex;
-                renderMinimapHistoryFrame(window.minimapHistoryIndex);
-            }, 400);
-        }
-        
+    // 最終ミニマップを描画
+    if (finalMinimap && finalMinimap.bm) {
+        drawMinimapOnCanvas(rCtx, finalMinimap, rCanvas.width, rCanvas.height);
     } else if (nextMode) {
-        // 履歴がない場合は最終状態を表示
-        historySliderContainer.style.display = 'none';
         drawResultMapFrame(rCtx, territories, world.width, world.height, mapFlags);
-    } else if (historyMinimap) {
-        historySliderContainer.style.display = 'none';
-        drawMinimapOnCanvas(rCtx, historyMinimap, rCanvas.width, rCanvas.height);
     } else {
-        historySliderContainer.style.display = 'none';
         rCtx.fillStyle = '#0f172a';
         rCtx.fillRect(0, 0, rCanvas.width, rCanvas.height);
-        rCtx.fillStyle = '#64748b';
-        rCtx.font = '16px sans-serif';
-        rCtx.textAlign = 'center';
-        rCtx.textBaseline = 'middle';
-        rCtx.fillText('No Map Data', rCanvas.width / 2, rCanvas.height / 2);
     }
 
 

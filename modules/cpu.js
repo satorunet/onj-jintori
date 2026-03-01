@@ -11,6 +11,7 @@ const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, HUMAN_VS_BOT, GRID_SIZE, BOOST_D
     SWARM_BOT_COUNT, SWARM_CHAIN_SPACING, SWARM_TEAM_NAME, SWARM_TEAM_COLOR,
     SWARM_ATTACK_RANGE, SWARM_REJOIN_TIMEOUT, CHAIN_MAX_LENGTH,
     CHAIN_DEBUG,
+    TANUKI_TEAM_NAME, TANUKI_TEAM_COLOR,
     state } = config;
 
 // 外部依存（後から設定）
@@ -189,6 +190,75 @@ function createCpuPlayer(forceDifficulty = null, isBoss = false) {
     return cpuPlayer;
 }
 
+// たぬきちBOT管理
+let tanukichiId = null;
+
+/**
+ * たぬきちBOTを生成（常に1体のみ）
+ */
+function createTanukichi() {
+    if (!game) return null;
+    if (tanukichiId && cpuPlayers[tanukichiId]) return cpuPlayers[tanukichiId]; // 既に存在
+
+    const id = game.generateShortId();
+    const currentMode = GAME_MODES[state.currentModeIdx];
+    const isTeam = currentMode === 'TEAM';
+
+    const team = isTeam ? TANUKI_TEAM_NAME : '';
+    const displayName = isTeam ? `[${TANUKI_TEAM_NAME}] たぬきち` : 'たぬきち';
+    const color = isTeam ? TANUKI_TEAM_COLOR : '#8B4513';
+    const difficulty = 'MEDIUM';
+    const settings = AI_SETTINGS[difficulty];
+
+    const tanukichi = {
+        id,
+        name: displayName,
+        color: color,
+        emoji: '🥺',
+        originalColor: '#8B4513',
+        x: 0, y: 0, dx: 0, dy: 0,
+        gridTrail: [], trail: [],
+        score: 0, kills: 0,
+        state: 'waiting',
+        invulnerableUntil: 0,
+        afkDeaths: 0,
+        hasMovedSinceSpawn: false,
+        requestedTeam: team,
+        team: team,
+        boostUntil: 0,
+        boostCooldownUntil: 0,
+        autoRun: false,
+        spawnTime: 0,
+        hasChattedInRound: false,
+
+        // CPU専用プロパティ
+        isCpu: true,
+        isBoss: false,
+        isTanukichi: true,  // たぬきち識別フラグ
+        scale: 1,
+        difficulty,
+        settings,
+        ws: { readyState: 1, send: () => {}, close: () => {} },
+
+        // AI状態
+        ai: {
+            lastDirectionChange: 0,
+            phase: 'idle',
+            captureDirection: null,
+            turnCount: 0,
+            targetAngle: 0,
+            stepsInDirection: 0
+        }
+    };
+
+    state.players[id] = tanukichi;
+    cpuPlayers[id] = tanukichi;
+    tanukichiId = id;
+
+    console.log(`[CPU] Created たぬきち bot: ${displayName} (team: ${team || 'SOLO'})`);
+    return tanukichi;
+}
+
 /**
  * CPUプレイヤーを削除
  */
@@ -210,9 +280,12 @@ function removeCpuPlayer(id) {
         state.usedShortIds.delete(cpu.id);
     }
 
+    // たぬきちIDをクリア
+    if (id === tanukichiId) tanukichiId = null;
+
     delete state.players[id];
     delete cpuPlayers[id];
-    
+
     console.log(`[CPU] Removed CPU player: ${cpu.name}`);
 }
 
@@ -237,19 +310,32 @@ function getCpuCount() {
 function adjustCpuCount(force = false) {
     if (!force && !state.roundActive) return;
 
+    // たぬきちBOTを常に1体維持（モードに関係なく）
+    if (!tanukichiId || !cpuPlayers[tanukichiId]) {
+        const tanukichi = createTanukichi();
+        if (tanukichi && game.respawnPlayer) {
+            game.respawnPlayer(tanukichi, true);
+            const pmData = { i: tanukichi.id, n: tanukichi.name, c: tanukichi.color, e: tanukichi.emoji, t: tanukichi.team || '' };
+            game.broadcast({ type: 'pm', players: [pmData] });
+        }
+    }
+
     const realCount = getRealPlayerCount();
     const cpuCount = getCpuCount();
     const mode = GAME_MODES[state.currentModeIdx];
 
     // モードに応じた目標CPU数（人間vsBOTモード: 人間×5）
+    // たぬきちは別枠なので通常CPUカウントから除外
+    const tanukichiCount = (tanukichiId && cpuPlayers[tanukichiId]) ? 1 : 0;
+    const normalCpuCount = cpuCount - tanukichiCount;
     const targetCount = HUMAN_VS_BOT ? Math.max(1, realCount * 5)
         : (mode === 'TEAM') ? CPU_TEAM_TARGET_COUNT : CPU_TARGET_COUNT;
     const threshold = (mode === 'TEAM') ? Infinity : PLAYER_THRESHOLD;  // チーム戦は常にCPU出現
 
     if (realCount <= threshold) {
         // プレイヤーが少ない → CPUを増やす
-        const needed = targetCount - cpuCount;
-        
+        const needed = targetCount - normalCpuCount;
+
         // 現在のBOSS数をチェック
         const currentBossCount = Object.values(cpuPlayers).filter(cpu => cpu.isBoss).length;
         const bossNeeded = (mode === 'TEAM') ? Math.max(0, CPU_BOSS_COUNT - currentBossCount) : 0;
@@ -263,14 +349,14 @@ function adjustCpuCount(force = false) {
             const cpu = createCpuPlayer(difficulty, shouldBeBoss);
             if (cpu && game.respawnPlayer) {
                 game.respawnPlayer(cpu, true);
-                
+
                 // プレイヤーマスタ情報をブロードキャスト
                 const pmData = { i: cpu.id, n: cpu.name, c: cpu.color, e: cpu.emoji, t: cpu.team || '' };
                 if (cpu.scale && cpu.scale !== 1) pmData.sc = cpu.scale;
                 game.broadcast({ type: 'pm', players: [pmData] });
             }
         }
-        
+
         // waitingになっているCPUを復活させる
         Object.values(cpuPlayers).forEach(cpu => {
             if (cpu.state === 'waiting' && game.respawnPlayer) {
@@ -278,8 +364,9 @@ function adjustCpuCount(force = false) {
             }
         });
     } else if (realCount > threshold && cpuCount > 0) {
-        // プレイヤーが増えた → CPUをwaiting状態に
+        // プレイヤーが増えた → CPUをwaiting状態に（たぬきちは除外）
         Object.values(cpuPlayers).forEach(cpu => {
+            if (cpu.isTanukichi) return;  // たぬきちは常にアクティブ
             if (cpu.state === 'active') {
                 cpu.state = 'waiting';
                 cpu.gridTrail = [];
@@ -1498,7 +1585,20 @@ function resetCpusForNewRound() {
 
         cpu.hasChattedInRound = false;
 
-        if (mode === 'TEAM') {
+        if (cpu.isTanukichi) {
+            // たぬきち: TEAM戦では「たぬき」チームに所属
+            if (mode === 'TEAM') {
+                cpu.team = TANUKI_TEAM_NAME;
+                cpu.requestedTeam = TANUKI_TEAM_NAME;
+                cpu.color = TANUKI_TEAM_COLOR;
+                cpu.name = `[${TANUKI_TEAM_NAME}] たぬきち`;
+            } else {
+                cpu.team = '';
+                cpu.requestedTeam = '';
+                cpu.color = cpu.originalColor;
+                cpu.name = 'たぬきち';
+            }
+        } else if (mode === 'TEAM') {
             // チーム戦: CPUチームに所属
             cpu.team = CPU_TEAM_NAME;
             cpu.requestedTeam = CPU_TEAM_NAME;
@@ -2114,11 +2214,7 @@ function updateDebugChainBots() {
                 if (sato.team) {
                     bot.name = `[${sato.team}] ${bot.name.replace(/^\[.*?\]\s*/, '')}`;
                     // チーム色を合わせる
-                    if (TEAM_COLORS[sato.team]) {
-                        bot.color = TEAM_COLORS[sato.team];
-                    } else {
-                        bot.color = sato.color;
-                    }
+                    bot.color = game.getTeamColor(sato.team);
                 }
                 if (game.respawnPlayer) game.respawnPlayer(bot, false);
                 // PMブロードキャスト
@@ -2182,6 +2278,7 @@ function stopDebugChainMode() {
 module.exports = {
     setDependencies,
     createCpuPlayer,
+    createTanukichi,
     removeCpuPlayer,
     adjustCpuCount,
     updateCpuAI,

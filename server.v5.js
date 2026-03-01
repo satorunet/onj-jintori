@@ -28,7 +28,7 @@ const {
     CHAIN_SPACING, CHAIN_MAX_LENGTH, CHAIN_PATH_HISTORY_SIZE,
     SWARM_BOT_COUNT, SWARM_CHAIN_SPACING, SWARM_TEAM_NAME, SWARM_TEAM_COLOR,
     SWARM_ATTACK_RANGE, SWARM_REJOIN_TIMEOUT,
-    GAME_MODES, FORCE_TEAM, HUMAN_VS_BOT, DEBUG_MODE, STATS_MODE, TEAM_COLORS,
+    GAME_MODES, FORCE_TEAM, HUMAN_VS_BOT, DEBUG_MODE, STATS_MODE, TEAM_COLORS, TANUKI_TEAM_NAME,
     state, bandwidthStats, dbPool
 } = config;
 
@@ -100,8 +100,6 @@ setInterval(() => {
         state.timeRemaining--;
         if (state.timeRemaining <= 0) endRound();
         
-        // 20秒ごとにミニマップ履歴を保存
-        game.saveMinimapSnapshot();
     }
 
     // 回転歯車の更新
@@ -1259,20 +1257,20 @@ function endRound() {
     // スコア画面用の国旗位置を計算（TEAMモード時のみ）
     const mapFlags = game.calculateMapFlags();
     
-    // ミニマップ履歴を取得
-    const minimapHistory = game.getMinimapHistory();
-    
-    const resultMsg = { 
-        type: 'round_end', 
-        rankings, 
-        teamRankings, 
-        winner: rankings[0], 
-        nextMode: GAME_MODES[nextModeIdx], 
-        allTeams, 
+    // 最終ミニマップを生成
+    const finalMinimap = game.generateMinimapBitmap();
+
+    const resultMsg = {
+        type: 'round_end',
+        rankings,
+        teamRankings,
+        winner: rankings[0],
+        nextMode: GAME_MODES[nextModeIdx],
+        allTeams,
         totalPlayers,
-        mapFlags: mapFlags,  // スコア画面用の国旗位置
-        minimapHistory: minimapHistory,  // ミニマップ履歴（パラパラ漫画用）
-        secondsUntilNext: 15  // 次ラウンドまでの秒数
+        mapFlags: mapFlags,
+        finalMinimap: finalMinimap ? { bm: finalMinimap.bm.toString('base64'), cp: finalMinimap.cp, sz: finalMinimap.sz, flags: finalMinimap.flags || [] } : null,
+        secondsUntilNext: 15
     };
     state.lastResultMsg = resultMsg;
     game.broadcast(resultMsg);
@@ -1302,9 +1300,6 @@ function endRound() {
         // 統計リセット
         stats.resetRoundStats();
         
-        // ミニマップ履歴クリア
-        game.clearMinimapHistory();
-        
         // CPUのラウンドリセット
         cpu.resetCpusForNewRound();
 
@@ -1326,14 +1321,9 @@ function endRound() {
                     const cleanName = p.name.replace(/^\[.*?\]\s*/, '');
                     p.name = `[${p.team}] ${cleanName}`;
                     // チーム色を適用
-                    if (TEAM_COLORS[p.team]) {
-                        p.color = TEAM_COLORS[p.team];
-                    } else {
-                        // カスタムチーム: チームメイトの色を継承
-                        const teammate = Object.values(state.players).find(op => op.id !== p.id && op.team === p.team && op.color);
-                        if (teammate) p.color = teammate.color;
-                        else p.color = game.getUniqueColor();
-                    }
+                    p.color = game.getTeamColor(p.team);
+                    // たぬきチームは絵文字を🥺に強制
+                    if (p.team === TANUKI_TEAM_NAME) p.emoji = '🥺';
                 }
             }
             

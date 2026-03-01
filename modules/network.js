@@ -10,7 +10,7 @@ const config = require('./config');
 const botAuth = require('./bot-auth');
 const cpu = require('./cpu');
 const bench = require('./bench-monitor');
-const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME, GRID_SIZE, state, bandwidthStats } = config;
+const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, TANUKI_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME, GRID_SIZE, state, bandwidthStats } = config;
 
 // IP別接続数の追跡（同一IP 2窓制限）
 const ipConnectionCount = new Map();
@@ -394,15 +394,7 @@ async function handleJsonMessage(data, p, id, byteLen) {
             p.team = team;
             if (team) {
                 p.name = `[${team}] ${name}`;
-                if (TEAM_COLORS[team]) {
-                    p.color = TEAM_COLORS[team];
-                } else {
-                    const teammate = Object.values(state.players).find(op => op.id !== p.id && op.team === team);
-                    if (teammate) p.color = teammate.color;
-                    else if (Object.values(state.players).some(op => op.id !== p.id && op.color === p.color)) {
-                        p.color = game.getUniqueColor();
-                    }
-                }
+                p.color = game.getTeamColor(team);
             } else {
                 p.name = name;
                 if (Object.values(state.players).some(op => op.id !== p.id && op.color === p.color)) {
@@ -416,6 +408,9 @@ async function handleJsonMessage(data, p, id, byteLen) {
 
         // 名前が「BOT」の場合はロボットアイコンに強制変更
         if (name.toUpperCase() === 'BOT') p.emoji = '🤖';
+
+        // たぬきチームは絵文字を🥺に強制
+        if (p.team === TANUKI_TEAM_NAME) p.emoji = '🥺';
 
         // respawnPlayer は game モジュールから呼び出す（後で統合時に設定）
         if (game.respawnPlayer) game.respawnPlayer(p, true);

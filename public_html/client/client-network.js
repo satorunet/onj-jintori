@@ -343,10 +343,9 @@ function connect() {
                                 pendingResultScreen.nextMode,
                                 pendingResultScreen.allTeams,
                                 pendingResultScreen.totalPlayers,
-                                null,
+                                pendingResultScreen.finalMinimap,
                                 pendingResultScreen.mapFlags,
-                                pendingResultScreen.secondsUntilNext,
-                                pendingResultScreen.minimapHistory
+                                pendingResultScreen.secondsUntilNext
                             );
                         }
                         // ゲーム中もスコア画面期間中も、pending結果はクリア
@@ -642,8 +641,7 @@ function connect() {
             const hasPlayedThisRound = me && me.state !== 'waiting';
             
             if (hasPlayedThisRound) {
-                // すぐに表示（minimapHistoryも渡す）
-                showResultScreen(data.rankings, data.winner, data.teamRankings, data.nextMode, data.allTeams, data.totalPlayers, null, data.mapFlags, data.secondsUntilNext, data.minimapHistory);
+                showResultScreen(data.rankings, data.winner, data.teamRankings, data.nextMode, data.allTeams, data.totalPlayers, data.finalMinimap, data.mapFlags, data.secondsUntilNext);
                 pendingResultScreen = null;  // 念のためクリア
             } else {
                 // wait状態の場合は保存（参加後に表示）
@@ -654,9 +652,9 @@ function connect() {
                     nextMode: data.nextMode,
                     allTeams: data.allTeams,
                     totalPlayers: data.totalPlayers,
+                    finalMinimap: data.finalMinimap,
                     mapFlags: data.mapFlags,
-                    secondsUntilNext: data.secondsUntilNext,
-                    minimapHistory: data.minimapHistory
+                    secondsUntilNext: data.secondsUntilNext
                 };
             }
         } else if (data.type === 'chat') {

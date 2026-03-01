@@ -134,11 +134,16 @@ const TEAM_COLORS = {
     'BLUE': '#3b82f6',
     'GREEN': '#22c55e',
     'YELLOW': '#eab308',
-    'HUMAN': '#3b82f6'
+    'HUMAN': '#3b82f6',
+    '🇯🇵たぬき': '#8B4513'
 };
 
 // CPU専用チーム名（プレイヤーは参加不可）
 const CPU_TEAM_NAME = '🇯🇵ONJ';
+
+// たぬきちBOT設定
+const TANUKI_TEAM_NAME = '🇯🇵たぬき';
+const TANUKI_TEAM_COLOR = '#8B4513';   // たぬき色（茶色）
 
 // ============================================================
 // ゲーム状態（可変）- 全モジュールから参照・更新される
@@ -177,8 +182,6 @@ const state = {
     // ミニマップ
     minimapBitmapCache: null,
     minimapColorPalette: {},
-    minimapHistory: [],              // ミニマップ履歴（20秒ごとのスナップショット）
-    lastMinimapHistoryTime: 0,       // 最後に履歴を保存した時間
 
     // ID管理
     nextShortId: 1,
@@ -330,6 +333,8 @@ module.exports = {
     GAME_MODES,
     TEAM_COLORS,
     CPU_TEAM_NAME,
+    TANUKI_TEAM_NAME,
+    TANUKI_TEAM_COLOR,
 
     // 管理者設定
     ADMIN_ACCOUNTS,
