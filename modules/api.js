@@ -235,6 +235,84 @@ async function handleHttpRequest(req, res) {
         }
 
         // ========================================
+        // API: 毎時勝者割合（時間杯）チーム＆個人 ※キャッシュテーブルから取得
+        // ========================================
+        if (urlPath === '/api/wins-hourly') {
+            if (!dbPool) {
+                res.writeHead(503);
+                res.end(JSON.stringify({ error: 'Database not available' }));
+                return;
+            }
+            let conn;
+            try {
+                conn = await dbPool.getConnection();
+                const hours = parseInt(url.searchParams.get('hours')) || 6;
+                const [teamRows] = await conn.execute(`
+                    SELECT hour_slot, hour_num, name, wins
+                    FROM wins_hourly_cache
+                    WHERE type = 'team'
+                      AND hour_slot >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                    ORDER BY hour_slot DESC, wins DESC
+                `, [hours]);
+                const [playerRows] = await conn.execute(`
+                    SELECT hour_slot, hour_num, name, wins
+                    FROM wins_hourly_cache
+                    WHERE type = 'player'
+                      AND hour_slot >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                    ORDER BY hour_slot DESC, wins DESC
+                `, [hours]);
+                res.writeHead(200);
+                res.end(JSON.stringify({ teams: teamRows, players: playerRows }));
+            } catch (err) {
+                console.error('[API] /api/wins-hourly error:', err);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: err.message }));
+            } finally {
+                if (conn) conn.release();
+            }
+            return;
+        }
+
+        // ========================================
+        // API: 日別勝者割合（1日杯）チーム＆個人 ※キャッシュテーブルから取得
+        // ========================================
+        if (urlPath === '/api/wins-daily') {
+            if (!dbPool) {
+                res.writeHead(503);
+                res.end(JSON.stringify({ error: 'Database not available' }));
+                return;
+            }
+            let conn;
+            try {
+                conn = await dbPool.getConnection();
+                const days = parseInt(url.searchParams.get('days')) || 7;
+                const [teamRows] = await conn.execute(`
+                    SELECT day_slot, day_label, name, wins
+                    FROM wins_daily_cache
+                    WHERE type = 'team'
+                      AND day_slot >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                    ORDER BY day_slot DESC, wins DESC
+                `, [days]);
+                const [playerRows] = await conn.execute(`
+                    SELECT day_slot, day_label, name, wins
+                    FROM wins_daily_cache
+                    WHERE type = 'player'
+                      AND day_slot >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+                    ORDER BY day_slot DESC, wins DESC
+                `, [days]);
+                res.writeHead(200);
+                res.end(JSON.stringify({ teams: teamRows, players: playerRows }));
+            } catch (err) {
+                console.error('[API] /api/wins-daily error:', err);
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: err.message }));
+            } finally {
+                if (conn) conn.release();
+            }
+            return;
+        }
+
+        // ========================================
         // API: サーバー負荷統計 (DB依存・認証必須)
         // ========================================
         if (urlPath === '/api/server-stats') {
@@ -619,8 +697,11 @@ async function handleHttpRequest(req, res) {
                 try {
                     const content = fs.readFileSync(filePath);
                     res.setHeader('Content-Type', mimeType);
-                    // JS/CSSはクエリパラメータでキャッシュバスト済みなので短期キャッシュ
-                    if (ext === '.js' || ext === '.css') {
+                    if (ext === '.html') {
+                        // HTMLは常に最新を取得
+                        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                    } else if (ext === '.js' || ext === '.css') {
+                        // JS/CSSはクエリパラメータでキャッシュバスト済みなので短期キャッシュ
                         res.setHeader('Cache-Control', 'public, max-age=300');
                     }
                     res.writeHead(200);

@@ -7,7 +7,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>onj-Jintori(新鯖)</title>
-    <link rel="stylesheet" href="style.css?v=2603010135">
+    <link rel="stylesheet" href="style.css?v=2603041607">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/msgpack-lite@0.1.26/dist/msgpack.min.js"></script>
 </head>
 
@@ -22,6 +23,20 @@
                     style="font-size:1rem; font-weight:normal; color:#cbd5e1; margin-left:10px;"></span></div>
             <div id="login-players"
                 style="display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin-bottom:15px; min-height:30px;">
+            </div>
+            <div id="login-hourly-graph" style="display:none; margin-bottom:12px; padding:8px 10px; background:rgba(0,0,0,0.3); border-radius:8px; border:1px solid #334155;">
+                <div style="display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:4px;">
+                    <button id="login-cup-hourly" class="hourly-tab-btn active" onclick="switchCupPeriod('login','hourly')">🏆 時間杯</button>
+                    <button id="login-cup-daily" class="hourly-tab-btn" onclick="switchCupPeriod('login','daily')">📅 1日杯</button>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:6px;">
+                    <button id="login-hourly-tab-team" class="hourly-tab-btn active" onclick="switchHourlyTab('login', 'team')">チーム</button>
+                    <button id="login-hourly-tab-player" class="hourly-tab-btn" onclick="switchHourlyTab('login', 'player')">個人</button>
+                </div>
+                <div id="login-hourly-bars"></div>
+                <div id="login-cup-expand" style="text-align:center; margin:-1px 0 -4px; display:none; line-height:1;">
+                    <i class="fas fa-angles-down" id="login-cup-expand-icon" onclick="toggleCupExpand('login')" style="color:#cbd5e1; cursor:pointer; font-size:8px; opacity:0.7;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'"></i>
+                </div>
             </div>
             <input type="text" id="username-input" class="login-input" placeholder="名前を入力 (任意)" maxlength="8">
             <div style="display:flex; gap:5px; margin-top:10px; align-items:center;">
@@ -49,6 +64,7 @@
                     <option value="🇻🇳">🇻🇳 ベトナム</option>
                     <option value="🇵🇭">🇵🇭 フィリピン</option>
                     <option value="🇻🇪">🇻🇪 ベネズエラ</option>
+                    <option value="🍂">🍂 落ち葉</option>
                 </select>
                 <input type="text" id="team-input" class="login-input" placeholder="チーム (3文字)" maxlength="3" style="flex:1;">
             </div>
@@ -56,6 +72,17 @@
                 onchange="selectExistingTeam(this.value)">
                 <option value="">既存チームから選択</option>
             </select>
+            <div id="player-image-row" style="margin-top:10px; display:none; align-items:center; gap:8px;">
+                <label style="cursor:pointer; background:#334155; color:#cbd5e1; padding:6px 12px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">
+                    🖼️ 画像
+                    <input type="file" id="player-image-input" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
+                </label>
+                <div id="player-image-preview" style="display:none; position:relative;">
+                    <img id="player-image-thumb" style="width:40px; height:40px; border-radius:6px; object-fit:cover; border:1px solid #475569;">
+                    <span onclick="clearUploadedImage()" style="position:absolute; top:-6px; right:-6px; background:#ef4444; color:#fff; border-radius:50%; width:16px; height:16px; display:flex; align-items:center; justify-content:center; font-size:10px; cursor:pointer; line-height:1;">✕</span>
+                </div>
+                <span id="player-image-status" style="color:#64748b; font-size:0.75rem;"></span>
+            </div>
             <button class="action-btn" onclick="startGame()">ゲームスタート</button>
             <div style="display:flex; gap:10px; margin-top:10px;">
                 <button class="action-btn" style="background:#475569; flex:1;" onclick="showHistoryModal()">📊 ランキング</button>
@@ -206,15 +233,31 @@
                 </div>
             </div>
 
-            <div id="result-next-mode-ui"></div>
-            <div style="margin-top:10px; display:flex; gap:5px;">
-                <input type="text" id="chat-input" placeholder="コメント (最大15文字)" maxlength="15"
-                    style="flex:1; padding:8px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#fff; font-size:14px;"
-                    onkeydown="if(event.key==='Enter') sendChat()">
-                <button onclick="sendChat()"
-                    style="padding:8px 15px; border-radius:6px; background:#3b82f6; color:#fff; border:none; cursor:pointer; font-size:14px; font-weight:bold;">送信</button>
+            <div id="result-hourly-graph" style="display:none; margin-top:12px; padding:8px 10px; background:rgba(0,0,0,0.3); border-radius:8px; border:1px solid #334155;">
+                <div style="display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:4px;">
+                    <button id="result-cup-hourly" class="hourly-tab-btn active" onclick="switchCupPeriod('result','hourly')">🏆 時間杯</button>
+                    <button id="result-cup-daily" class="hourly-tab-btn" onclick="switchCupPeriod('result','daily')">📅 1日杯</button>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:6px;">
+                    <button id="result-hourly-tab-team" class="hourly-tab-btn active" onclick="switchHourlyTab('result', 'team')">チーム</button>
+                    <button id="result-hourly-tab-player" class="hourly-tab-btn" onclick="switchHourlyTab('result', 'player')">個人</button>
+                </div>
+                <div id="result-hourly-bars"></div>
+                <div id="result-cup-expand" style="text-align:center; margin:-1px 0 -4px; display:none; line-height:1;">
+                    <i class="fas fa-angles-down" id="result-cup-expand-icon" onclick="toggleCupExpand('result')" style="color:#cbd5e1; cursor:pointer; font-size:8px; opacity:0.7;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'"></i>
+                </div>
             </div>
-            <div id="next-round-msg" style="margin-top: 15px; color: #94a3b8;">15秒後に次のラウンドへ...</div>
+            <div id="result-next-mode-ui"></div>
+            <div id="result-chat-footer" style="position:sticky; bottom:0; background:#1e293b; padding:8px 0 0; z-index:2; border-top:1px solid #334155; margin-top:10px;">
+                <div style="display:flex; gap:5px;">
+                    <input type="text" id="chat-input" placeholder="コメント (最大15文字)" maxlength="15"
+                        style="flex:1; padding:8px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#fff; font-size:14px;"
+                        onkeydown="if(event.key==='Enter') sendChat()">
+                    <button onclick="sendChat()"
+                        style="padding:8px 15px; border-radius:6px; background:#3b82f6; color:#fff; border:none; cursor:pointer; font-size:14px; font-weight:bold;">送信</button>
+                </div>
+                <div id="next-round-msg" style="margin-top:8px; color:#94a3b8; text-align:center;">15秒後に次のラウンドへ...</div>
+            </div>
         </div>
     </div>
 
@@ -261,6 +304,13 @@
             <div class="kill-title">死亡</div>
             <div id="deathReason" style="margin-top:10px; font-size:1.2rem; color:#f87171;"></div>
             <div class="kill-sub">復活まで <span id="respawnTime">5</span>...</div>
+        </div>
+
+        <div id="ghostScreen" class="kill-msg" style="display:none; border: 2px solid #818cf8; background:rgba(30,27,75,0.92); top:auto; bottom:55px; transform:translateX(-50%); padding:8px 14px;">
+            <div class="kill-title" style="color:#a5b4fc; font-size:1.3rem;">👻 ゴースト状態</div>
+            <div style="margin-top:4px; font-size:0.75rem; color:#c4b5fd;">短時間で連続死亡の為、待機ペナルティが発生しました</div>
+            <div id="ghostPenaltyInfo" style="margin-top:3px; font-size:0.85rem; color:#a5b4fc; font-weight:bold;"></div>
+            <div class="kill-sub" style="color:#a5b4fc; font-size:0.8rem; margin-top:2px;">復活まで <span id="ghostTime">0</span>秒</div>
         </div>
     </div>
 
@@ -315,7 +365,11 @@
                     flex-direction: column;
                     gap: 2px;
                 "></div>
-                <div style="display:flex; border-top: 1px solid #334155;">
+                <div style="display:flex; border-top: 1px solid #334155; align-items:center;">
+                    <label id="team-image-label" style="cursor:pointer; padding:5px 6px; color:#93c5fd; font-size:14px; flex-shrink:0; display:none;" title="画像提案">
+                        🖼️
+                        <input type="file" id="team-image-input" accept="image/*" style="display:none;" onchange="handleTeamImageUpload(this)">
+                    </label>
                     <input type="text" id="team-chat-input" placeholder="メッセージ" maxlength="20"
                         style="flex:1; padding:5px 6px; border:none; background:transparent; color:#fff; font-size:12px; outline:none;"
                         onkeydown="if(event.key==='Enter') sendTeamChat()">
@@ -325,6 +379,11 @@
             </div>
             <!-- 自軍タブ -->
             <div id="tc-panel-team" style="display:none; height:130px; overflow-y:auto; padding:4px 6px;">
+                <div id="tc-team-stats"></div>
+                <div id="team-img-current" style="display:none; text-align:center; margin-top:4px; padding-top:4px; border-top:1px solid #334155;">
+                    <img id="team-img-thumb" style="width:40px; height:40px; border-radius:4px; object-fit:cover; border:1px solid #475569;">
+                    <div style="font-size:10px; color:#64748b;">チーム画像</div>
+                </div>
             </div>
             <!-- 戦歴タブ -->
             <div id="tc-panel-log" style="display:none; height:130px; overflow-y:auto; padding:4px 6px;">
@@ -399,10 +458,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
     <!-- Client Scripts (分離版) -->
-    <script src="client/client-config.js?v=2603010135"></script>
-    <script src="client/client-network.js?v=2603010135"></script>
-    <script src="client/client-game.js?v=2603010135"></script>
-    <script src="client/client-ui.js?v=2603010135"></script>
+    <script src="client/client-config.js?v=2603041607"></script>
+    <script src="client/client-network.js?v=2603041607"></script>
+    <script src="client/client-game.js?v=2603041607"></script>
+    <script src="client/client-ui.js?v=2603041607"></script>
 </body>
 
 </html>

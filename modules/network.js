@@ -10,10 +10,24 @@ const config = require('./config');
 const botAuth = require('./bot-auth');
 const cpu = require('./cpu');
 const bench = require('./bench-monitor');
-const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, TANUKI_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME, GRID_SIZE, state, bandwidthStats } = config;
+const { GAME_MODES, TEAM_COLORS, CPU_TEAM_NAME, TANUKI_TEAM_NAME, HUMAN_VS_BOT, BOOST_DURATION, BOOST_COOLDOWN, JET_CHARGE_TIME, TURTLE_MODE, JET_ENABLED, FORCE_JET, IMAGE_ENABLED, GRID_SIZE, state, bandwidthStats } = config;
 
 // IP別接続数の追跡（同一IP 2窓制限）
 const ipConnectionCount = new Map();
+
+// ゴーストペナルティデータへの参照（server.v5.jsから設定）
+let ipQuickDeathDataRef = null;
+let ghostFreeCountRef = 0;
+let ghostPenaltyBaseRef = 20;
+let ghostPenaltyMaxRef = 180;
+let ipInitialSpawnRef = null;
+function setGhostPenaltyRef(dataMap, freeCount, penaltyBase, penaltyMax, initialSpawnMap) {
+    ipQuickDeathDataRef = dataMap;
+    ghostFreeCountRef = freeCount;
+    if (penaltyBase !== undefined) ghostPenaltyBaseRef = penaltyBase;
+    if (penaltyMax !== undefined) ghostPenaltyMaxRef = penaltyMax;
+    if (initialSpawnMap) ipInitialSpawnRef = initialSpawnMap;
+}
 
 // 外部依存（後から設定）
 let game = null;
@@ -101,7 +115,8 @@ function setupConnectionHandler() {
             chainOffsetY: 0,          // リーダーからの相対Y座標(剛体オフセット)
             chainPrevId: null,        // 直前のチェーンメンバーID（ロープ物理用）
             chainPrevX: undefined,    // Verlet前回X座標
-            chainPrevY: undefined     // Verlet前回Y座標
+            chainPrevY: undefined,    // Verlet前回Y座標
+            chatMuted: false
         };
 
         if (requiresAuth) {
@@ -119,13 +134,17 @@ function setupConnectionHandler() {
             tf: state.territoryRects,
             tv: state.territoryVersion,
             teams: game.getTeamStats(),
-            pc: Object.values(state.players).filter(p => p.state !== 'waiting').length
+            pc: Object.values(state.players).filter(p => p.state !== 'waiting').length,
+            turtleMode: TURTLE_MODE || false,
+            jetEnabled: JET_ENABLED || false,
+            imageEnabled: IMAGE_ENABLED || false,
+            forceJet: FORCE_JET || false
         }));
 
         // 既存プレイヤーのマスタ情報送信
         const existingPlayers = Object.values(state.players)
             .filter(p => p.id !== id && p.name && p.state !== 'waiting')
-            .map(p => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; return d; });
+            .map(p => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; if (p.img) d.img = p.img; return d; });
         if (existingPlayers.length > 0) {
             ws.send(JSON.stringify({ type: 'pm', players: existingPlayers }));
         }
@@ -177,6 +196,9 @@ function setupConnectionHandler() {
                     return;
                 }
 
+                // spawnWait中は入力を無視（透明出現待機）
+                if (p.spawnWaitUntil && Date.now() < p.spawnWaitUntil) return;
+
                 if (angleByte !== 255) {
                     const normalized = angleByte / 254;
                     const angle = normalized * 2 * Math.PI - Math.PI;
@@ -185,13 +207,13 @@ function setupConnectionHandler() {
                     p.invulnerableUntil = 0;
                 }
 
-                // 2バイト目: ブースト/ジェットリクエスト
-                if (msg.length === 2 && msg[1] === 1) {
+                // 2バイト目: ブースト/ジェットリクエスト（🐢カメさんモード時は無効）
+                if (msg.length === 2 && msg[1] === 1 && !TURTLE_MODE) {
                     const now = Date.now();
                     const canBoost = !p.boostCooldownUntil || now >= p.boostCooldownUntil;
                     if (canBoost) {
                         // ジェットチャージ済みかチェック（20秒間ブースト未使用）
-                        const jetReady = p.boostReadySince && (now - p.boostReadySince >= JET_CHARGE_TIME);
+                        const jetReady = JET_ENABLED && p.boostReadySince && (now - p.boostReadySince >= JET_CHARGE_TIME);
                         if (jetReady) {
                             p.jetUntil = now + BOOST_DURATION;
                             p.boostCooldownUntil = now + BOOST_COOLDOWN;
@@ -212,7 +234,9 @@ function setupConnectionHandler() {
             try {
                 const data = JSON.parse(msg);
                 handleJsonMessage(data, p, id, byteLen);
-            } catch (e) { }
+            } catch (e) {
+                if (msg.length > 100) console.log(`[MSG-ERR] ${p.name || id}: JSON parse failed, len=${msg.length}, err=${e.message}`);
+            }
         });
 
         ws.on('close', () => {
@@ -228,8 +252,52 @@ function setupConnectionHandler() {
             }
 
             if (state.players[id]) {
-                if (game.detachFromChain) game.detachFromChain(state.players[id]);
-                state.usedShortIds.delete(state.players[id].id);
+                const p = state.players[id];
+                // ゴースト状態中に切断（リセット逃げ）: カウントを増やしてペナルティ延長（強制ジェット時はスキップ）
+                if (!FORCE_JET && p.isGhost && p.ip && p.ip !== 'unknown' && ipQuickDeathDataRef && !p.isCpu) {
+                    const ipKey = p.ip;
+                    const nowTs = Date.now();
+                    const GHOST_MAX_STACK = 10;
+                    let rec = ipQuickDeathDataRef.get(ipKey) || { count: 0, penaltyUntil: 0 };
+                    rec.count = Math.min(rec.count + 1, GHOST_MAX_STACK);
+                    if (rec.count > ghostFreeCountRef) {
+                        const penaltyMs = Math.min(ghostPenaltyBaseRef * (rec.count - ghostFreeCountRef) * 1000, ghostPenaltyMaxRef * 1000);
+                        // 現在の残りペナルティに加算（合計も3分上限）
+                        const remaining = Math.max(rec.penaltyUntil - nowTs, 0);
+                        rec.penaltyUntil = nowTs + Math.min(remaining + penaltyMs, ghostPenaltyMaxRef * 1000);
+                        console.log(`[GHOST] ゴースト逃げ検知 IP=${ipKey} count=${rec.count} 追加ペナルティ=${Math.round(penaltyMs/1000)}s 合計残り=${Math.round((rec.penaltyUntil - nowTs)/1000)}s`);
+                    } else {
+                        console.log(`[GHOST] ゴースト逃げカウント IP=${ipKey} count=${rec.count}/${ghostFreeCountRef}`);
+                    }
+                    ipQuickDeathDataRef.set(ipKey, rec);
+                }
+                // ログアウト時のスポーン位置固定判定
+                if (!p.isCpu && !p.isGhost && p.state === 'active' && p.spawnTime && p.ip && p.ip !== 'unknown') {
+                    const aliveMs = Date.now() - p.spawnTime;
+                    // 10秒以上プレイしていたらスポーン位置固定を解除
+                    if (aliveMs >= 10000 && ipInitialSpawnRef) {
+                        ipInitialSpawnRef.delete(p.ip);
+                    }
+                    // 短時間ログアウト判定（5秒未満で切断→ゴーストカウント加算、強制ジェット時はスキップ）
+                    if (!FORCE_JET && aliveMs < 5000 && ipQuickDeathDataRef) {
+                        const ipKey2 = p.ip;
+                        const nowTs2 = Date.now();
+                        const GHOST_MAX_STACK = 10;
+                        let rec2 = ipQuickDeathDataRef.get(ipKey2) || { count: 0, penaltyUntil: 0 };
+                        rec2.count = Math.min(rec2.count + 1, GHOST_MAX_STACK);
+                        if (rec2.count > ghostFreeCountRef) {
+                            const penaltyMs = Math.min(ghostPenaltyBaseRef * (rec2.count - ghostFreeCountRef) * 1000, ghostPenaltyMaxRef * 1000);
+                            const remaining = Math.max(rec2.penaltyUntil - nowTs2, 0);
+                            rec2.penaltyUntil = nowTs2 + Math.min(remaining + penaltyMs, ghostPenaltyMaxRef * 1000);
+                            console.log(`[GHOST] 短時間ログアウト検知 IP=${ipKey2} alive=${Math.round(aliveMs/1000)}s count=${rec2.count} ペナルティ+${Math.round(penaltyMs/1000)}s`);
+                        } else {
+                            console.log(`[GHOST] 短時間ログアウトカウント IP=${ipKey2} alive=${Math.round(aliveMs/1000)}s count=${rec2.count}/${ghostFreeCountRef}`);
+                        }
+                        ipQuickDeathDataRef.set(ipKey2, rec2);
+                    }
+                }
+                if (game.detachFromChain) game.detachFromChain(p);
+                state.usedShortIds.delete(p.id);
             }
             delete state.players[id];
             delete state.lastFullSyncVersion[id];
@@ -406,6 +474,14 @@ async function handleJsonMessage(data, p, id, byteLen) {
         // join時にemoji指定があれば上書き
         if (data.emoji) p.emoji = data.emoji;
 
+        // プレイヤー画像のバリデーション＆保存（ソロモードのみ。チーム戦はチーム画像提案で管理）
+        if (IMAGE_ENABLED && !p.team && data.img && typeof data.img === 'string' && data.img.length <= 140000) {
+            // base64文字列のみ許可
+            if (/^[A-Za-z0-9+/=]+$/.test(data.img)) {
+                p.img = data.img;
+            }
+        }
+
         // 名前が「BOT」の場合はロボットアイコンに強制変更
         if (name.toUpperCase() === 'BOT') p.emoji = '🤖';
 
@@ -416,10 +492,31 @@ async function handleJsonMessage(data, p, id, byteLen) {
         if (game.respawnPlayer) game.respawnPlayer(p, true);
         state.lastFullSyncVersion[p.id] = 0;
 
+        // チームに承認済み画像があれば自動適用
+        if (p.team && state.teamImg[p.team]) {
+            p.img = state.teamImg[p.team];
+        }
+
         game.broadcast({
             type: 'pm',
-            players: [(() => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; return d; })()]
+            players: [(() => { const d = { i: p.id, n: p.name, c: p.color, e: p.emoji, t: p.team || '' }; if (p.scale && p.scale !== 1) d.sc = p.scale; if (p.img) d.img = p.img; return d; })()]
         });
+
+        // 既存の提案があればjoinしたプレイヤーにも通知
+        if (p.team && state.teamImgProposal[p.team]) {
+            const proposal = state.teamImgProposal[p.team];
+            const proposerPlayer = state.players[proposal.proposer];
+            if (p.ws && p.ws.readyState === 1) {
+                p.ws.send(JSON.stringify({
+                    type: 'team_img_proposal',
+                    img: proposal.img,
+                    proposerName: proposerPlayer ? proposerPlayer.name : '???',
+                    votes: proposal.voters.size,
+                    needed: proposal.needed,
+                    isProposer: p.ip === proposal.proposerIp
+                }));
+            }
+        }
     } else if (data.type === 'update_team') {
         bandwidthStats.received.updateTeam += byteLen;
         // 国旗対応: コードポイント単位で5文字まで
@@ -504,8 +601,118 @@ async function handleJsonMessage(data, p, id, byteLen) {
                 tp.ws.send(msg);
             }
         });
+    } else if (data.type === 'team_img_propose') {
+        // チーム画像提案
+        if (!IMAGE_ENABLED) return;
+        console.log(`[TEAM-IMG] Propose received from ${p.name || id}, state=${p.state}, team=${p.team}, imgLen=${(data.img||'').length}`);
+        if (p.state !== 'active' || !p.team) { console.log(`[TEAM-IMG] Rejected: state=${p.state}, team=${p.team}`); return; }
+        const img = data.img;
+        if (!img || typeof img !== 'string' || img.length > 140000) { console.log(`[TEAM-IMG] Rejected: invalid img, len=${(img||'').length}`); return; }
+        if (!/^[A-Za-z0-9+/=]+$/.test(img)) { console.log(`[TEAM-IMG] Rejected: invalid base64`); return; }
+
+        // チームのユニークIP数から必要票数を算出（提案者IP除く）
+        const teamUniqueIps = new Set();
+        Object.values(state.players).forEach(tp => {
+            if (tp.team === p.team && tp.state === 'active') teamUniqueIps.add(tp.ip);
+        });
+        const othersCount = teamUniqueIps.size - (teamUniqueIps.has(p.ip) ? 1 : 0);
+        const needed = Math.min(2, othersCount); // 0人→即承認, 1人→1票, 2人以上→2票
+
+        state.teamImgProposal[p.team] = { img, proposerIp: p.ip, voters: new Set(), needed };
+
+        // 1人チーム（needed=0）なら即承認
+        if (needed === 0) {
+            state.teamImg[p.team] = img;
+            const teamPlayers = Object.values(state.players).filter(tp => tp.team === p.team);
+            teamPlayers.forEach(tp => { tp.img = img; });
+            const profiles = teamPlayers.filter(tp => tp.name && tp.state !== 'waiting').map(tp => {
+                const d = { i: tp.id, n: tp.name, c: tp.color, e: tp.emoji, t: tp.team || '' };
+                if (tp.scale && tp.scale !== 1) d.sc = tp.scale;
+                if (tp.img) d.img = tp.img;
+                return d;
+            });
+            if (profiles.length > 0) game.broadcast({ type: 'pm', players: profiles });
+            const approvedMsg = JSON.stringify({ type: 'team_img_approved', img });
+            teamPlayers.forEach(tp => { if (tp.ws && tp.ws.readyState === 1) tp.ws.send(approvedMsg); });
+            delete state.teamImgProposal[p.team];
+            console.log(`[TEAM-IMG] Auto-approved for team ${p.team} (solo)`);
+        } else {
+            let sentCount = 0;
+            Object.values(state.players).forEach(tp => {
+                if (tp.team === p.team && tp.ws && tp.ws.readyState === 1) {
+                    const isSameIp = tp.ip === p.ip;
+                    tp.ws.send(JSON.stringify({
+                        type: 'team_img_proposal',
+                        img,
+                        proposerName: p.name,
+                        votes: 0,
+                        needed,
+                        isProposer: isSameIp
+                    }));
+                    sentCount++;
+                }
+            });
+            console.log(`[TEAM-IMG] Proposal sent to ${sentCount} members of team ${p.team} (needed=${needed})`);
+        }
+    } else if (data.type === 'team_img_vote') {
+        // チーム画像投票（IP単位で識別）
+        if (!IMAGE_ENABLED) return;
+        if (p.state !== 'active' || !p.team) return;
+        const proposal = state.teamImgProposal[p.team];
+        if (!proposal) return;
+        if (p.ip === proposal.proposerIp) return; // 提案者と同一IPは投票不可
+        if (proposal.voters.has(p.ip)) return;    // 同一IPの二重投票防止
+
+        proposal.voters.add(p.ip);
+        const votes = proposal.voters.size;
+
+        if (votes >= proposal.needed) {
+            // 承認: チーム画像を設定
+            state.teamImg[p.team] = proposal.img;
+            // チーム全員の p.img を設定
+            const teamPlayers = Object.values(state.players).filter(tp => tp.team === p.team);
+            teamPlayers.forEach(tp => {
+                tp.img = proposal.img;
+            });
+
+            // pm再送信（全クライアントにimg付きプロフィール送信）
+            const profiles = teamPlayers
+                .filter(tp => tp.name && tp.state !== 'waiting')
+                .map(tp => {
+                    const d = { i: tp.id, n: tp.name, c: tp.color, e: tp.emoji, t: tp.team || '' };
+                    if (tp.scale && tp.scale !== 1) d.sc = tp.scale;
+                    if (tp.img) d.img = tp.img;
+                    return d;
+                });
+            if (profiles.length > 0) {
+                game.broadcast({ type: 'pm', players: profiles });
+            }
+
+            // team_img_approved 送信
+            const approvedMsg = JSON.stringify({ type: 'team_img_approved', img: proposal.img });
+            teamPlayers.forEach(tp => {
+                if (tp.ws && tp.ws.readyState === 1) {
+                    tp.ws.send(approvedMsg);
+                }
+            });
+
+            // 提案をクリア
+            delete state.teamImgProposal[p.team];
+        } else {
+            // 投票数更新をチーム全員に送信
+            Object.values(state.players).forEach(tp => {
+                if (tp.team === p.team && tp.ws && tp.ws.readyState === 1) {
+                    tp.ws.send(JSON.stringify({
+                        type: 'team_img_proposal_update',
+                        votes,
+                        needed: proposal.needed,
+                        isProposer: tp.ip === proposal.proposerIp
+                    }));
+                }
+            });
+        }
     } else if (data.type === 'chat') {
-        if (p.hasChattedInRound) return;
+        if (!FORCE_JET && p.hasChattedInRound) return;
         bandwidthStats.received.chat += byteLen;
         
         // チャットテキストのバリデーション
@@ -520,8 +727,31 @@ async function handleJsonMessage(data, p, id, byteLen) {
         
         const text = rawText.substring(0, 15);
         if (text.trim().length > 0) {
+            // // ゴーストペナルティ時のチャット禁止（無効化）
+            // if (p.chatMuted) {
+            //     if (ws.readyState === 1) {
+            //         ws.send(JSON.stringify({ type: 'chat_muted' }));
+            //     }
+            //     return;
+            // }
             p.hasChattedInRound = true;
             game.broadcast({ type: 'chat', text, color: p.color, name: p.name });
+        }
+    } else if (data.type === 'request_profiles') {
+        // 未認識プレイヤーのマスタ情報を再送
+        const ids = data.ids;
+        if (Array.isArray(ids) && ids.length > 0) {
+            const profiles = ids.slice(0, 20).map(rid => {
+                const rp = state.players[rid];
+                if (!rp || !rp.name || rp.state === 'waiting') return null;
+                const d = { i: rp.id, n: rp.name, c: rp.color, e: rp.emoji, t: rp.team || '' };
+                if (rp.scale && rp.scale !== 1) d.sc = rp.scale;
+                if (rp.img) d.img = rp.img;
+                return d;
+            }).filter(Boolean);
+            if (profiles.length > 0 && p.ws && p.ws.readyState === 1) {
+                p.ws.send(JSON.stringify({ type: 'pm', players: profiles }));
+            }
         }
     } else if (Array.isArray(data) && data.length === 2 && p.state === 'active') {
         bandwidthStats.received.input += byteLen;
@@ -607,8 +837,8 @@ function startBroadcastLoop() {
                 colorToIndex[color] = parseInt(idx);
             });
             
-            // プレイヤー位置を配列形式で生成 [x, y, colorIndex]
-            const playerPositions = activePlayers.map(p => [
+            // プレイヤー位置を配列形式で生成 [x, y, colorIndex]（ゴースト除外）
+            const playerPositions = activePlayers.filter(p => !p.isGhost).map(p => [
                 Math.round(p.x),
                 Math.round(p.y),
                 colorToIndex[p.color] || 0
@@ -735,10 +965,16 @@ function startBroadcastLoop() {
                 }
 
                 const isInvuln = !p.hasMovedSinceSpawn && !p.autoRun;
-                let st = p.state === 'dead' ? 0 : p.state === 'waiting' ? 2 : isInvuln ? 3 : 1;
+                const isSpawnWait = p.spawnWaitUntil && Date.now() < p.spawnWaitUntil;
+                // st: 0=dead, 1=active, 2=waiting, 3+=invuln, 4=ghost, 5=spawnWait
+                let st = p.state === 'dead' ? 0 : p.state === 'waiting' ? 2 : p.state === 'ghost' ? 4 : isSpawnWait ? 5 : isInvuln ? 3 : 1;
 
                 const data = { i: p.id, x: Math.round(p.x), y: Math.round(p.y) };
                 if (st !== 1) data.st = st;
+                // ゴースト状態: 自分自身には残り秒数を送信
+                if (p.state === 'ghost' && isMe && p.ghostUntil) {
+                    data.gw = Math.max(0, Math.ceil((p.ghostUntil - now) / 1000));
+                }
                 // チェーン情報
                 if (p.chainRole === 'leader') { data.cr = 1; }
                 else if (p.chainRole === 'follower') {
@@ -762,8 +998,8 @@ function startBroadcastLoop() {
                     if (nearby.length > 0) data.cn = nearby; // chain nearby
                 }
 
-                // ブースト/ジェット状態（自分のプレイヤーのみ詳細情報を送信）
-                if (isMe) {
+                // ブースト/ジェット状態（自分のプレイヤーのみ詳細情報を送信、ゴースト中は送らない）
+                if (isMe && !p.isGhost) {
                     // ジェット中の残り時間
                     if (p.jetUntil && now < p.jetUntil) {
                         data.bs = Math.ceil((p.jetUntil - now) / 100);
@@ -968,4 +1204,4 @@ function buildTerritoryBinary() {
     return tb;
 }
 
-module.exports = { setDependencies, setupConnectionHandler, startBroadcastLoop };
+module.exports = { setDependencies, setupConnectionHandler, startBroadcastLoop, setGhostPenaltyRef };

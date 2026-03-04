@@ -40,8 +40,18 @@ function connect() {
                 if (lp) lp.textContent = `(${currentPlayerCount}人プレイ中)`;
             }
 
+            turtleMode = data.turtleMode || false;
+            jetEnabled = data.jetEnabled || false;
+            imageEnabled = data.imageEnabled || false;
+            forceJet = data.forceJet || false;
+            // 画像機能のUI表示切り替え
+            const imgRow = document.getElementById('player-image-row');
+            if (imgRow) imgRow.style.display = imageEnabled ? 'flex' : 'none';
+            const teamImgLabel = document.getElementById('team-image-label');
+            if (teamImgLabel) teamImgLabel.style.display = imageEnabled ? '' : 'none';
             updateModeDisplay(data.mode);
             updateTeamSelect();
+            loadTeamWinGraph();
         } else if (data.type === 'bot_auth_required') {
             // Bot認証が必要
             console.log('[Bot Auth] Authentication required');
@@ -76,6 +86,16 @@ function connect() {
 
                     // colorCacheにも登録
                     colorCache[pid] = p.c || p.color;
+
+                    // プレイヤー画像の非同期ロード
+                    if (p.img) {
+                        const img = new Image();
+                        img.onload = () => {
+                            playerImages[pid] = img;
+                            playerPatterns[pid] = null; // パターン未作成マーク
+                        };
+                        img.src = 'data:image/jpeg;base64,' + p.img;
+                    }
 
                     const existing = players.find(ep => ep.id === pid);
                     if (existing) {
@@ -186,15 +206,23 @@ function connect() {
                 let state = 'active';
                 let invulnerableCount = 0;
 
+                let isSpawnWait = false;
                 if (serverP.st !== undefined) {
                     if (serverP.st === 0) state = 'dead';
                     else if (serverP.st === 2) state = 'waiting';
+                    else if (serverP.st === 4) state = 'ghost';
+                    else if (serverP.st === 5) { state = 'active'; isSpawnWait = true; }
                     else if (serverP.st >= 3) {
                         state = 'active';
                         invulnerableCount = serverP.st - 2;
                     }
                 } else if (serverP.state) {
                     state = serverP.state;
+                }
+
+                // ゴースト状態: 自分自身のカウントダウン更新
+                if (state === 'ghost' && sId === myId && serverP.gw !== undefined) {
+                    updateGhostCountdown(serverP.gw);
                 }
 
                 const normalized = {
@@ -205,6 +233,7 @@ function connect() {
                     name: profile.name || serverP.n || serverP.name,
                     emoji: profile.emoji || serverP.e || serverP.emoji,
                     team: profile.team || serverP.t || serverP.team,
+                    isSpawnWait: isSpawnWait,
                 };
 
                 // 軌跡のデコード（差分送信対応）
@@ -280,7 +309,8 @@ function connect() {
                     chainRole: serverP.cr || 0,            // 0=none, 1=leader, 2=follower
                     chainLeaderId: serverP.cl || null,
                     chainAnchorX: serverP.cax || 0,
-                    chainAnchorY: serverP.cay || 0
+                    chainAnchorY: serverP.cay || 0,
+                    isGhost: state === 'ghost'
                 });
 
                 // 連結候補（近くのチームメイト）更新
@@ -363,6 +393,8 @@ function connect() {
                     existing.chainLeaderId = normalized.chainLeaderId;
                     existing.chainAnchorX = normalized.chainAnchorX;
                     existing.chainAnchorY = normalized.chainAnchorY;
+                    existing.isGhost = normalized.isGhost;
+                    existing.isSpawnWait = normalized.isSpawnWait;
                     existing.hasDetail = true;
                 } else {
                     normalized.targetX = normalized.x;
@@ -372,6 +404,21 @@ function connect() {
                 }
             });
             
+            // 未認識プレイヤー検知 → サーバーにプロフィール再送要求（2秒デバウンス）
+            if (!connect._profileCooldown || Date.now() > connect._profileCooldown) {
+                const missingIds = [];
+                playersData.forEach(serverP => {
+                    const sId = serverP.i || serverP.id;
+                    if (sId !== myId && !playerProfiles[sId]) {
+                        missingIds.push(sId);
+                    }
+                });
+                if (missingIds.length > 0 && socket && socket.readyState === 1) {
+                    socket.send(JSON.stringify({ type: 'request_profiles', ids: missingIds }));
+                    connect._profileCooldown = Date.now() + 2000;
+                }
+            }
+
             // sメッセージに含まれていないプレイヤーを削除
             // （waiting状態のプレイヤーなど）
             players = players.filter(p => {
@@ -507,7 +554,10 @@ function connect() {
             // 歯車占領メッセージ
             addKillFeed(`⚙️ ${data.name} が歯車を占領した！`);
         } else if (data.type === 'player_death') {
-            if (data.id === myId) showDeathScreen(data.reason);
+            if (data.id === myId) {
+                resetLbTracking();
+                showDeathScreen(data.reason);
+            }
 
             const p = players.find(obj => obj.id === data.id);
             if (p) {
@@ -585,11 +635,14 @@ function connect() {
             clearTeamChat();
             clearTeamBattleLog();
             hideDeathScreen();
+            hideGhostScreen();
+            hideHourlyTip();
             document.getElementById('result-modal').style.display = 'none';
             obstacles = data.obstacles || [];
             gears = (data.gears || []).map(g => ({ ...g, startTime: Date.now() }));
 
             playerScores = {};
+            resetLbTracking();
 
             const lbList = document.getElementById('lb-list');
             if (lbList) lbList.innerHTML = '';
@@ -606,6 +659,19 @@ function connect() {
 
             minimapBitmapData = null;
             minimapPlayerPositions = [];
+
+            // ラウンド切り替え時に画像キャッシュをクリア（pmで再送される）
+            playerImages = {};
+            playerPatterns = {};
+            // 画像機能ON＆個人戦のみlocalStorageから自分の画像を復元
+            if (imageEnabled && data.mode === 'SOLO') {
+                const savedImg = localStorage.getItem('playerImageBase64');
+                if (savedImg && myId) {
+                    const img = new Image();
+                    img.onload = () => { playerImages[myId] = img; playerPatterns[myId] = null; };
+                    img.src = 'data:image/jpeg;base64,' + savedImg;
+                }
+            }
 
             players.forEach(p => {
                 p.score = 0;
@@ -632,6 +698,9 @@ function connect() {
         } else if (data.type === 'round_end') {
             minimapBitmapData = null;
             minimapPlayerPositions = [];
+            territories = [];
+            territoryMap.clear();
+            territoryVersion = 0;
             
             // スコア画面期間に入った
             isScoreScreenPeriod = true;
@@ -661,9 +730,43 @@ function connect() {
             spawnNicoComment(data.text, data.color, data.name);
         } else if (data.type === 'team_chat') {
             appendTeamChatMessage(data.text, data.name, data.color);
+        } else if (data.type === 'team_img_proposal') {
+            showTeamImgProposal(data.img, data.proposerName, data.votes, data.needed, data.isProposer);
+        } else if (data.type === 'team_img_proposal_update') {
+            updateTeamImgVotes(data.votes, data.needed, data.isProposer);
+        } else if (data.type === 'team_img_approved') {
+            onTeamImgApproved(data.img);
         } else if (data.type === 'team_log_sync') {
             // リスポーン時のログ同期
             syncTeamLogs(data.chat || [], data.battle || []);
+        } else if (data.type === 'ghost_penalty') {
+            // ゴーストペナルティ開始
+            resetLbTracking();
+            hideDeathScreen();
+            // サーバーから受け取ったスポーン地点を原点として固定
+            if (data.x !== undefined && data.y !== undefined) {
+                ghostOriginX = data.x;
+                ghostOriginY = data.y;
+                ghostLocalX = data.x;
+                ghostLocalY = data.y;
+                ghostVelX = 0;
+                ghostVelY = 0;
+                // カメラをスポーン地点が画面中心になるよう設定
+                ghostCameraX = data.x - (width / ZOOM_LEVEL) / 2;
+                ghostCameraY = data.y - (height / ZOOM_LEVEL) / 2;
+                ghostInitialized = true;
+            }
+            showGhostScreen(data.seconds, data.count);
+        } else if (data.type === 'ghost_end') {
+            // ゴーストペナルティ終了
+            hideGhostScreen();
+            ghostInitialized = false;
+        } else if (data.type === 'chat_muted') {
+            // チャット送信拒否通知
+            addKillFeed('⚠️ チャット禁止中（連続早死ペナルティ）');
+        } else if (data.type === 'chat_muted_notify') {
+            // チャット禁止になった通知
+            addKillFeed(`⚠️ 連続早死${data.count}回のためチャット禁止になりました`);
         }
     };
     socket.onclose = (e) => {
@@ -679,6 +782,8 @@ function connect() {
         }
         document.getElementById('login-modal').style.display = 'flex';
         document.getElementById('deathScreen').style.display = 'none';
+        hideGhostScreen();
+        hideHourlyTip();
         document.getElementById('result-modal').style.display = 'none';
         isGameReady = false;
 

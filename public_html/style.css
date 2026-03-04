@@ -134,6 +134,21 @@
             transform: scale(0.98);
         }
 
+        .hourly-tab-btn {
+            padding: 3px 12px;
+            border-radius: 4px;
+            border: 1px solid #475569;
+            background: #1e293b;
+            color: #94a3b8;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+        .hourly-tab-btn.active {
+            background: #3b82f6;
+            color: #fff;
+            border-color: #3b82f6;
+        }
+
         .score-panel {
             display: flex;
             gap: 20px;

@@ -56,6 +56,231 @@ function showAfkDisconnectNotice() {
 }
 
 // ============================================
+// プレイヤー画像アップロード（個人用・ソロ戦向け）
+// ============================================
+let uploadedImageBase64 = null;
+
+// 起動時にlocalStorageから復元
+(function restorePlayerImage() {
+    const saved = localStorage.getItem('playerImageBase64');
+    if (!saved) return;
+    uploadedImageBase64 = saved;
+    function showPreview() {
+        const thumb = document.getElementById('player-image-thumb');
+        if (!thumb) return;
+        thumb.src = 'data:image/jpeg;base64,' + saved;
+        document.getElementById('player-image-preview').style.display = 'inline-block';
+        const status = document.getElementById('player-image-status');
+        if (status) {
+            status.textContent = `${Math.round(saved.length / 1024)}KB`;
+            status.style.color = '#4ade80';
+        }
+    }
+    // DOM要素が既に存在する場合は直接表示、まだの場合はDOMContentLoaded待ち
+    if (document.getElementById('player-image-thumb')) {
+        showPreview();
+    } else {
+        document.addEventListener('DOMContentLoaded', showPreview);
+    }
+})();
+
+function handleImageUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.getElementById('player-image-status');
+    status.textContent = '処理中...';
+    status.style.color = '#94a3b8';
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+            const maxDim = 320;
+            const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+            const w = Math.round(img.width * scale);
+            const h = Math.round(img.height * scale);
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const c = canvas.getContext('2d');
+            c.drawImage(img, 0, 0, w, h);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+            uploadedImageBase64 = dataUrl.split(',')[1];
+            localStorage.setItem('playerImageBase64', uploadedImageBase64);
+            const thumb = document.getElementById('player-image-thumb');
+            thumb.src = dataUrl;
+            document.getElementById('player-image-preview').style.display = 'inline-block';
+            status.textContent = `${Math.round(uploadedImageBase64.length / 1024)}KB`;
+            status.style.color = '#4ade80';
+        };
+        img.onerror = () => {
+            status.textContent = '読込失敗';
+            status.style.color = '#f87171';
+        };
+        img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+function clearUploadedImage() {
+    uploadedImageBase64 = null;
+    localStorage.removeItem('playerImageBase64');
+    document.getElementById('player-image-preview').style.display = 'none';
+    document.getElementById('player-image-input').value = '';
+    document.getElementById('player-image-status').textContent = '';
+}
+
+// ============================================
+// チーム画像提案＆投票
+// ============================================
+
+function handleTeamImageUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+            const maxDim = 320;
+            const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+            const w = Math.round(img.width * scale);
+            const h = Math.round(img.height * scale);
+            const cvs = document.createElement('canvas');
+            cvs.width = w; cvs.height = h;
+            const c = cvs.getContext('2d');
+            c.drawImage(img, 0, 0, w, h);
+            const dataUrl = cvs.toDataURL('image/jpeg', 0.7);
+            const base64 = dataUrl.split(',')[1];
+            // 確認ダイアログ表示
+            showTeamImgConfirm(dataUrl, () => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: 'team_img_propose', img: base64 }));
+                }
+            });
+        };
+        img.onerror = () => { console.error('Team image load failed'); };
+        img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    input.value = '';
+}
+
+function showTeamImgConfirm(dataUrl, onConfirm) {
+    // 既存のダイアログがあれば削除
+    const existing = document.getElementById('team-img-confirm');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'team-img-confirm';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:20000;';
+    overlay.innerHTML = `
+        <div style="background:#1e293b;border:1px solid #3b82f6;border-radius:12px;padding:16px;text-align:center;max-width:250px;width:90%;">
+            <div style="color:#e2e8f0;font-size:13px;margin-bottom:10px;">この画像を提案しますか？</div>
+            <img src="${dataUrl}" style="width:80px;height:80px;border-radius:6px;object-fit:cover;border:1px solid #475569;margin-bottom:10px;">
+            <div style="display:flex;gap:8px;justify-content:center;">
+                <button id="team-img-confirm-no" style="padding:6px 16px;background:#475569;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;">やめる</button>
+                <button id="team-img-confirm-yes" style="padding:6px 16px;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;">提案する</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('team-img-confirm-no').onclick = () => overlay.remove();
+    document.getElementById('team-img-confirm-yes').onclick = () => { overlay.remove(); onConfirm(); };
+}
+
+function voteTeamImage() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'team_img_vote' }));
+    }
+    // 承認ボタンを押した後、UIを「投票済み」に変更
+    const btn = document.getElementById('team-img-vote-btn');
+    if (btn) { btn.textContent = '投票済'; btn.disabled = true; btn.style.background = '#475569'; }
+}
+
+function showTeamImgProposal(imgBase64, proposerName, votes, needed, isProposer) {
+    // 既存の提案メッセージがあれば削除
+    const old = document.getElementById('team-img-proposal-msg');
+    if (old) old.remove();
+
+    const msgs = document.getElementById('team-chat-messages');
+    if (!msgs) return;
+
+    const shortName = (proposerName || '???').replace(/^\[.*?\]\s*/, '');
+    const div = document.createElement('div');
+    div.id = 'team-img-proposal-msg';
+    div.style.cssText = 'padding:4px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;margin:2px 0;';
+
+    const voteLabel = votes + '/' + needed + ' 票';
+    let btnHtml;
+    if (isProposer) {
+        btnHtml = '<span style="font-size:10px;color:#64748b;">提案者</span>';
+    } else {
+        btnHtml = '<button id="team-img-vote-btn" onclick="voteTeamImage()" style="padding:2px 8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;font-size:10px;cursor:pointer;margin-right:4px;">承認</button>';
+    }
+
+    div.innerHTML = `
+        <div style="font-size:11px;color:#93c5fd;font-weight:bold;">${shortName} が陣地画像を提案</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
+            <img src="data:image/jpeg;base64,${imgBase64}" style="width:40px;height:40px;border-radius:4px;object-fit:cover;border:1px solid #475569;flex-shrink:0;">
+            <div>
+                <div id="team-img-proposal-votes" style="font-size:10px;color:#94a3b8;margin-bottom:2px;">${voteLabel}</div>
+                ${btnHtml}
+            </div>
+        </div>
+    `;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+}
+
+function updateTeamImgVotes(votes, needed, isProposer) {
+    const el = document.getElementById('team-img-proposal-votes');
+    if (el) el.textContent = votes + '/' + needed + ' 票';
+    // isProposerの場合はボタンがないので何もしない
+}
+
+function hideTeamImgProposal() {
+    const msg = document.getElementById('team-img-proposal-msg');
+    if (msg) msg.remove();
+}
+
+function onTeamImgApproved(imgBase64) {
+    // 提案メッセージを「承認済み」に変更
+    const msg = document.getElementById('team-img-proposal-msg');
+    if (msg) {
+        msg.style.background = 'rgba(74,222,128,0.1)';
+        msg.style.borderColor = 'rgba(74,222,128,0.3)';
+        const voteEl = document.getElementById('team-img-proposal-votes');
+        if (voteEl) voteEl.textContent = '承認済み！';
+        const btn = document.getElementById('team-img-vote-btn');
+        if (btn) btn.remove();
+    } else {
+        appendTeamChatMessage('🖼️ チーム画像が承認されました！', '', '#4ade80');
+    }
+    // チーム画像サムネイル表示
+    const cur = document.getElementById('team-img-current');
+    if (cur) {
+        cur.style.display = 'block';
+        document.getElementById('team-img-thumb').src = 'data:image/jpeg;base64,' + imgBase64;
+    }
+    // チーム全員のplayerImagesを一括設定
+    const me = players.find(p => p.id === myId);
+    if (!me || !me.team) return;
+    const img = new Image();
+    img.onload = () => {
+        for (const pid in playerProfiles) {
+            if (playerProfiles[pid].team === me.team) {
+                playerImages[pid] = img;
+                playerPatterns[pid] = null;
+            }
+        }
+        // 自分も
+        playerImages[myId] = img;
+        playerPatterns[myId] = null;
+    };
+    img.src = 'data:image/jpeg;base64,' + imgBase64;
+}
+
+// ============================================
 // Bot認証ダイアログ
 // ============================================
 function showBotAuthDialog(captchaImage, message) {
@@ -372,7 +597,9 @@ function startGame() {
     if (flag) localStorage.setItem('playerFlag', flag);
 
     if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'join', name: name, team: team }));
+        const joinMsg = { type: 'join', name: name, team: team };
+        if (imageEnabled && uploadedImageBase64) joinMsg.img = uploadedImageBase64;
+        socket.send(JSON.stringify(joinMsg));
         document.getElementById('login-modal').style.display = 'none';
         isGameReady = true;
         
@@ -411,10 +638,16 @@ function selectExistingTeam(fullTeamName) {
     let flag = '';
     let teamName = fullTeamName;
     
-    if (chars.length >= 2) {
+    // 特殊プレフィックス絵文字（国旗以外でフラグとして使えるもの）
+    const SPECIAL_FLAG_EMOJIS = ['🍂'];
+
+    if (chars.length >= 1 && SPECIAL_FLAG_EMOJIS.includes(chars[0])) {
+        flag = chars[0];
+        teamName = chars.slice(1).join('');
+    } else if (chars.length >= 2) {
         const first = chars[0].codePointAt(0);
         const second = chars[1].codePointAt(0);
-        
+
         // Regional Indicator Symbol範囲: U+1F1E6 (🇦) to U+1F1FF (🇿)
         if (first >= 0x1F1E6 && first <= 0x1F1FF && second >= 0x1F1E6 && second <= 0x1F1FF) {
             flag = chars[0] + chars[1];
@@ -658,6 +891,363 @@ function updateLoginIcons() {
     }
 }
 
+// 時間杯チップ表示（ラインで結ぶ）
+function showHourlyTip(e, text) {
+    e.stopPropagation();
+    hideHourlyTip();
+
+    const rect = e.target.getBoundingClientRect();
+    const barCx = rect.left + rect.width / 2;
+    const barTop = rect.top;
+    const barBottom = rect.bottom;
+
+    // チップ
+    const tip = document.createElement('div');
+    tip.id = 'hourly-tip';
+    tip.textContent = text;
+    tip.style.cssText = 'position:fixed; background:#1e293b; color:#fff; font-size:0.7rem; padding:4px 10px; border-radius:4px; border:1px solid #475569; box-shadow:0 2px 8px rgba(0,0,0,0.5); z-index:20000; pointer-events:none; white-space:nowrap;';
+    document.body.appendChild(tip);
+
+    const tipW = tip.offsetWidth;
+    const tipH = tip.offsetHeight;
+    const gap = 8;
+    const above = barTop - tipH - gap >= 0;
+    let tipTop = above ? barTop - tipH - gap : barBottom + gap;
+    let tipLeft = barCx - tipW / 2;
+    if (tipLeft < 4) tipLeft = 4;
+    if (tipLeft + tipW > window.innerWidth - 4) tipLeft = window.innerWidth - tipW - 4;
+    tip.style.left = tipLeft + 'px';
+    tip.style.top = tipTop + 'px';
+
+    // ライン（SVG）
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.id = 'hourly-tip-line';
+    svg.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; z-index:19999; pointer-events:none;';
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', barCx);
+    line.setAttribute('y1', above ? barTop : barBottom);
+    line.setAttribute('x2', tipLeft + tipW / 2);
+    line.setAttribute('y2', above ? tipTop + tipH : tipTop);
+    line.setAttribute('stroke', '#94a3b8');
+    line.setAttribute('stroke-width', '1');
+    line.setAttribute('stroke-dasharray', '3,3');
+    svg.appendChild(line);
+    // バー上の小丸
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', barCx);
+    circle.setAttribute('cy', above ? barTop : barBottom);
+    circle.setAttribute('r', '2.5');
+    circle.setAttribute('fill', '#94a3b8');
+    svg.appendChild(circle);
+    document.body.appendChild(svg);
+
+    setTimeout(() => { document.addEventListener('click', hideHourlyTip, { once: true }); }, 0);
+}
+function hideHourlyTip() {
+    const t = document.getElementById('hourly-tip');
+    if (t) t.remove();
+    const l = document.getElementById('hourly-tip-line');
+    if (l) l.remove();
+}
+
+// 杯データのキャッシュ
+let hourlyWinsCache = null;
+let dailyWinsCache = null;
+let resultWinnerName = null; // 直近ラウンド勝者名（チップ自動表示用）
+
+// 期間・カテゴリの現在状態を保持
+const currentCupPeriod = {};   // location → 'hourly' | 'daily'
+const currentCupCategory = {}; // location → 'team' | 'player'
+
+// 時間杯データを取得
+async function fetchHourlyWins() {
+    try {
+        const res = await fetch(API_BASE + '/api/wins-hourly?hours=24', { credentials: 'include' });
+        const data = await res.json();
+        // 空データはキャッシュしない（レースコンディション対策）
+        if (data && !data.error && (data.teams?.length || data.players?.length)) hourlyWinsCache = data;
+        return data;
+    } catch (e) { console.error('[HourlyGraph] fetch error:', e); return null; }
+}
+
+// 1日杯データを取得
+async function fetchDailyWins() {
+    try {
+        const res = await fetch(API_BASE + '/api/wins-daily?days=20', { credentials: 'include' });
+        const data = await res.json();
+        // 空データはキャッシュしない（レースコンディション対策）
+        if (data && !data.error && (data.teams?.length || data.players?.length)) dailyWinsCache = data;
+        return data;
+    } catch (e) { console.error('[DailyGraph] fetch error:', e); return null; }
+}
+
+// 共通: 横棒グラフHTMLを生成（slotKey/labelKey でhourly/daily両対応）
+function buildCupBarsHtml(rows, topN, slotKey, labelKey) {
+    if (!rows || rows.length === 0) return '';
+
+    const TEAM_COLORS = {
+        'RED': '#ef4444', 'BLUE': '#3b82f6', 'GREEN': '#22c55e',
+        'YELLOW': '#eab308', 'HUMAN': '#3b82f6', '🍂たぬき': '#8B4513', '🇯🇵ONJ': '#9ca3af'
+    };
+    const PALETTE = ['#f97316','#a855f7','#14b8a6','#ec4899','#6366f1','#84cc16','#f43f5e','#06b6d4'];
+
+    // topN指定時: 全スロットの合計勝利数で上位N名を決定
+    let topNames = null;
+    if (topN > 0) {
+        const totalByName = {};
+        rows.forEach(row => { totalByName[row.name] = (totalByName[row.name] || 0) + row.wins; });
+        const sorted = Object.entries(totalByName).sort((a, b) => b[1] - a[1]);
+        topNames = new Set(sorted.slice(0, topN).map(e => e[0]));
+    }
+
+    // スロットごとにグループ化
+    const slotMap = {};
+    const allNames = new Set();
+    rows.forEach(row => {
+        const slot = row[slotKey];
+        const label = row[labelKey];
+        if (!slotMap[slot]) slotMap[slot] = { label: label, entries: [] };
+        if (topNames && !topNames.has(row.name)) {
+            const existing = slotMap[slot].entries.find(e => e.name === 'その他');
+            if (existing) { existing.wins += row.wins; }
+            else { slotMap[slot].entries.push({ name: 'その他', wins: row.wins }); }
+        } else {
+            slotMap[slot].entries.push({ name: row.name, wins: row.wins });
+            allNames.add(row.name);
+        }
+    });
+    if (topNames) allNames.add('その他');
+
+    // 名前ごとに一貫した色を割り当て
+    const colorMap = {};
+    let paletteIdx = 0;
+    allNames.forEach(name => {
+        if (name === 'その他') { colorMap[name] = '#475569'; }
+        else { colorMap[name] = TEAM_COLORS[name] || PALETTE[paletteIdx++ % PALETTE.length]; }
+    });
+
+    const slots = Object.keys(slotMap).sort().reverse();
+
+    let html = '';
+    slots.forEach(slot => {
+        const h = slotMap[slot];
+        const totalWins = h.entries.reduce((sum, t) => sum + t.wins, 0);
+        if (totalWins === 0) return;
+
+        // wins降順にソート
+        h.entries.sort((a, b) => b.wins - a.wins);
+
+        // 🏆表示: その他以外の最上位を表示、いなければ「なし」
+        const topEntry = h.entries.find(e => e.name !== 'その他');
+        const winnerName = topEntry ? topEntry.name : 'なし';
+
+        html += `<div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">`;
+        html += `<div style="font-size:0.7rem; color:#64748b; width:36px; text-align:right; flex-shrink:0;">${h.label}</div>`;
+        html += `<div style="display:flex; height:18px; border-radius:3px; overflow:hidden; flex:1;">`;
+        h.entries.forEach(t => {
+            const pct = (t.wins / totalWins * 100);
+            const color = colorMap[t.name];
+            const label = pct >= 20 ? `${t.name}` : (pct >= 12 ? `${Math.round(pct)}%` : '');
+            const tipText = `${t.name}: ${t.wins}勝 (${Math.round(pct)}%)`;
+            html += `<div data-name="${t.name.replace(/"/g, '&quot;')}" onclick="showHourlyTip(event,'${tipText.replace(/'/g, "\\&#39;")}')" style="width:${pct}%; background:${color}; display:flex; align-items:center; justify-content:center; font-size:0.6rem; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,0.7); white-space:nowrap; overflow:hidden; min-width:2px; cursor:pointer;">${label}</div>`;
+        });
+        html += `</div>`;
+        html += `<div style="font-size:0.65rem; color:#fbbf24; width:50px; text-align:left; flex-shrink:0; overflow:hidden; white-space:nowrap;">🏆${winnerName}</div>`;
+        html += `</div>`;
+    });
+
+    return html || '';
+}
+
+// 期間切り替え（時間杯 / 1日杯）
+async function switchCupPeriod(location, period) {
+    hideHourlyTip();
+    currentCupPeriod[location] = period;
+
+    // 期間ボタンのactive状態を更新
+    const hourlyBtn = document.getElementById(location + '-cup-hourly');
+    const dailyBtn = document.getElementById(location + '-cup-daily');
+    if (hourlyBtn) hourlyBtn.className = 'hourly-tab-btn' + (period === 'hourly' ? ' active' : '');
+    if (dailyBtn) dailyBtn.className = 'hourly-tab-btn' + (period === 'daily' ? ' active' : '');
+
+    // データが未取得 or 空ならフェッチ
+    if (period === 'daily' && (!dailyWinsCache || (!dailyWinsCache.teams?.length && !dailyWinsCache.players?.length))) await fetchDailyWins();
+    if (period === 'hourly' && (!hourlyWinsCache || (!hourlyWinsCache.teams?.length && !hourlyWinsCache.players?.length))) await fetchHourlyWins();
+
+    // 現在のカテゴリタブで再描画
+    const tab = currentCupCategory[location] || 'team';
+    renderCupBars(location, tab);
+}
+
+// カテゴリ切り替え（チーム / 個人）
+function switchHourlyTab(location, tab) {
+    hideHourlyTip();
+    currentCupCategory[location] = tab;
+
+    // タブボタンのactive状態を更新
+    const teamBtn = document.getElementById(location + '-hourly-tab-team');
+    const playerBtn = document.getElementById(location + '-hourly-tab-player');
+    if (teamBtn) teamBtn.className = 'hourly-tab-btn' + (tab === 'team' ? ' active' : '');
+    if (playerBtn) playerBtn.className = 'hourly-tab-btn' + (tab === 'player' ? ' active' : '');
+
+    renderCupBars(location, tab);
+}
+
+// グラフ描画の共通処理
+function renderCupBars(location, tab) {
+    const barsDiv = document.getElementById(location + '-hourly-bars');
+    if (!barsDiv) return;
+
+    const period = currentCupPeriod[location] || 'hourly';
+    const cache = period === 'daily' ? dailyWinsCache : hourlyWinsCache;
+    if (!cache) {
+        barsDiv.innerHTML = '<div style="text-align:center; color:#64748b; font-size:0.7rem;">データなし</div>';
+        return;
+    }
+
+    let rows = tab === 'team' ? cache.teams : cache.players;
+
+    // 個人タブ: [チーム名] プレフィックスを除去し、同一人物の勝利数を合算
+    if (tab === 'player' && rows) {
+        const slotKey = period === 'daily' ? 'day_slot' : 'hour_slot';
+        const labelKey = period === 'daily' ? 'day_label' : 'hour_num';
+        const merged = {};
+        rows.forEach(r => {
+            const pureName = r.name.replace(/^\[.*?\]\s*/, '');
+            const key = r[slotKey] + '\0' + pureName;
+            if (merged[key]) { merged[key].wins += r.wins; }
+            else { merged[key] = { [slotKey]: r[slotKey], [labelKey]: r[labelKey], name: pureName, wins: r.wins }; }
+        });
+        rows = Object.values(merged);
+        rows.sort((a, b) => a[slotKey] < b[slotKey] ? 1 : a[slotKey] > b[slotKey] ? -1 : b.wins - a.wins);
+    }
+
+    const topN = (tab === 'player') ? 10 : 0;
+    let slotKey, labelKey;
+    if (period === 'daily') {
+        slotKey = 'day_slot';
+        labelKey = 'day_label';
+    } else {
+        slotKey = 'hour_slot';
+        // hour_num を「N時」形式のラベルに変換
+        rows = rows.map(r => ({ ...r, _label: r.hour_num + '時' }));
+        slotKey = 'hour_slot';
+        labelKey = '_label';
+    }
+
+    const html = buildCupBarsHtml(rows, topN, slotKey, labelKey);
+    const expandDiv = document.getElementById(location + '-cup-expand');
+    const expandIcon = document.getElementById(location + '-cup-expand-icon');
+
+    // タブ切り替え前の展開状態を保持
+    const wasExpanded = barsDiv.firstElementChild && barsDiv.firstElementChild.dataset.expanded === 'true';
+
+    if (!html) {
+        barsDiv.innerHTML = '<div style="text-align:center; color:#64748b; font-size:0.7rem;">データなし</div>';
+        if (expandDiv) expandDiv.style.display = 'none';
+    } else {
+        const cupTransition = 'max-height 0.4s cubic-bezier(0.34,1.56,0.64,1)';
+        barsDiv.innerHTML = `<div style="max-height:${wasExpanded ? '300px' : '114px'}; overflow-y:auto; scrollbar-width:thin; scrollbar-color:#475569 transparent;${wasExpanded ? '' : ' transition:' + cupTransition + ';'}">${html}</div>`;
+        barsDiv.firstElementChild.addEventListener('scroll', hideHourlyTip);
+
+        // 展開ボタンの表示制御 + 展開状態を復元
+        if (expandDiv) {
+            requestAnimationFrame(() => {
+                const wrapper = barsDiv.firstElementChild;
+                if (wrapper && wrapper.scrollHeight > 118) {
+                    expandDiv.style.display = 'block';
+                    if (wasExpanded) {
+                        wrapper.style.maxHeight = '300px';
+                        wrapper.style.overflowY = 'auto';
+                        wrapper.style.transition = cupTransition;
+                        wrapper.dataset.expanded = 'true';
+                        if (expandIcon) expandIcon.className = 'fas fa-angles-up';
+                    } else {
+                        wrapper.dataset.expanded = 'false';
+                        if (expandIcon) expandIcon.className = 'fas fa-angles-down';
+                    }
+                } else {
+                    expandDiv.style.display = 'none';
+                }
+            });
+        }
+
+        // 結果画面: 勝者のチップを自動表示（最新スロットの該当バーをクリック）
+        if (location === 'result' && resultWinnerName) {
+            requestAnimationFrame(() => {
+                const segments = barsDiv.querySelectorAll('[data-name]');
+                for (const seg of segments) {
+                    if (seg.dataset.name === resultWinnerName) {
+                        seg.click();
+                        break;
+                    }
+                }
+            });
+        }
+    }
+}
+
+// 杯グラフの展開/折りたたみ
+function toggleCupExpand(location) {
+    hideHourlyTip();
+    const barsDiv = document.getElementById(location + '-hourly-bars');
+    if (!barsDiv || !barsDiv.firstElementChild) return;
+    const wrapper = barsDiv.firstElementChild;
+    const icon = document.getElementById(location + '-cup-expand-icon');
+    const isExpanded = wrapper.dataset.expanded === 'true';
+
+    if (isExpanded) {
+        wrapper.style.maxHeight = '114px';
+        wrapper.style.overflowY = 'auto';
+        wrapper.dataset.expanded = 'false';
+        if (icon) icon.className = 'fas fa-angles-down';
+    } else {
+        wrapper.style.maxHeight = '300px';
+        wrapper.style.overflowY = 'auto';
+        wrapper.dataset.expanded = 'true';
+        if (icon) icon.className = 'fas fa-angles-up';
+    }
+}
+
+// 杯グラフを読み込み・表示（login / result 両方に対応）
+async function loadHourlyGraph(location, defaultTab) {
+    const container = document.getElementById(location + '-hourly-graph');
+    const barsDiv = document.getElementById(location + '-hourly-bars');
+    if (!container || !barsDiv) return;
+
+    // 結果画面はキャッシュクリアして最新データを取得
+    if (location === 'result') {
+        hourlyWinsCache = null;
+        dailyWinsCache = null;
+    }
+
+    // 両方のデータを並行フェッチ
+    const [hourlyData] = await Promise.all([fetchHourlyWins(), fetchDailyWins()]);
+    const hasHourly = hourlyWinsCache && (hourlyWinsCache.teams?.length || hourlyWinsCache.players?.length);
+    const hasDaily = dailyWinsCache && (dailyWinsCache.teams?.length || dailyWinsCache.players?.length);
+
+    if (!hasHourly && !hasDaily) {
+        container.style.display = 'none';
+        return;
+    }
+
+    // 初期状態をセット
+    currentCupPeriod[location] = 'hourly';
+    currentCupCategory[location] = defaultTab || 'team';
+
+    // 期間ボタンの初期active状態
+    const hourlyBtn = document.getElementById(location + '-cup-hourly');
+    const dailyBtn = document.getElementById(location + '-cup-daily');
+    if (hourlyBtn) hourlyBtn.className = 'hourly-tab-btn active';
+    if (dailyBtn) dailyBtn.className = 'hourly-tab-btn';
+
+    container.style.display = 'block';
+    switchHourlyTab(location, defaultTab || 'team');
+}
+
+// 後方互換: loginモーダル用のショートカット
+function loadTeamWinGraph() { loadHourlyGraph('login'); }
+
 function updateTeamSelect() {
     const select = document.getElementById('team-select');
     if (!select) return;
@@ -746,54 +1336,168 @@ function updateEventBanner() {
 // Intl.Segmenterキャッシュ（毎フレーム生成を回避）
 const _segmenter = (typeof Intl !== 'undefined' && Intl.Segmenter) ? new Intl.Segmenter('ja', { granularity: 'grapheme' }) : null;
 
-function updateLeaderboard() {
-    const limit = (currentMode === 'SOLO') ? 5 : 2;
+// ランク/スコア変動ポップアップ用の状態
+let _lbPrevRank = null;
+let _lbPrevScore = null;
+let _lbScoreAccum = 0;
+let _lbRankPopupCD = 0;
+let _lbScorePopupCD = 0;
 
+// スコアカウントアップ/ダウンアニメーション
+let _lbAnimCurrent = 0;   // 現在表示中のスコア（raw値）
+let _lbAnimTarget = 0;    // 目標スコア（raw値）
+let _lbAnimInterval = null;
+
+function _lbAnimTick() {
+    const diff = _lbAnimTarget - _lbAnimCurrent;
+    if (Math.abs(diff) < 0.5) {
+        _lbAnimCurrent = _lbAnimTarget;
+        clearInterval(_lbAnimInterval);
+        _lbAnimInterval = null;
+    } else {
+        // 0.01%刻みでカウント（raw値に変換）
+        const w = (typeof world !== 'undefined' && world && world.width) ? world.width : 3000;
+        const h = (typeof world !== 'undefined' && world && world.height) ? world.height : 3000;
+        const gs = (typeof gridSize !== 'undefined' && gridSize) ? gridSize : 10;
+        const totalCells = (w / gs) * (h / gs);
+        const step = totalCells * 0.0001; // 0.01%分のraw値
+        if (diff > 0) {
+            _lbAnimCurrent = Math.min(_lbAnimCurrent + step, _lbAnimTarget);
+        } else {
+            _lbAnimCurrent = Math.max(_lbAnimCurrent - step, _lbAnimTarget);
+        }
+    }
+    const myRow = document.getElementById('lb-my-row');
+    if (myRow) {
+        const scoreEl = myRow.querySelector('.lb-score');
+        if (scoreEl) scoreEl.textContent = formatRawScore(_lbAnimCurrent);
+    }
+}
+
+// ── リーダーボード行入れ替えアニメーション (FLIP) ──
+const _lbFlipState = new Map(); // container → { prevOrder, animating, timer }
+
+function captureRowOrder(container) {
+    const keys = [];
+    container.querySelectorAll('.lb-row[data-key]').forEach(row => {
+        keys.push(row.dataset.key);
+    });
+    return keys;
+}
+
+function flipUpdateDom(container, html) {
+    const cid = container.id || 'default';
+    let st = _lbFlipState.get(cid);
+    if (!st) { st = { prevOrder: [], animating: false, timer: null }; _lbFlipState.set(cid, st); }
+
+    const prevOrder = st.prevOrder;
+
+    // アニメーション中はDOMだけ更新してFLIPスキップ
+    if (st.animating) {
+        container.innerHTML = html;
+        st.prevOrder = captureRowOrder(container);
+        return;
+    }
+
+    // 前回の順序をインデックスマップに変換
+    const prevIdx = {};
+    prevOrder.forEach((key, i) => { prevIdx[key] = i; });
+
+    // DOM更新
+    container.innerHTML = html;
+    const newOrder = captureRowOrder(container);
+    st.prevOrder = newOrder;
+
+    // 順序が変わったか判定
+    let orderChanged = false;
+    if (prevOrder.length !== newOrder.length) {
+        orderChanged = true;
+    } else {
+        for (let i = 0; i < newOrder.length; i++) {
+            if (newOrder[i] !== prevOrder[i]) { orderChanged = true; break; }
+        }
+    }
+    if (!orderChanged) return;
+
+    // FLIP: インデックス差分 × 行高さで移動量を計算（getBoundingClientRectを避ける）
+    const rows = container.querySelectorAll('.lb-row[data-key]');
+    if (rows.length === 0) return;
+    const rowHeight = rows[0].offsetHeight + 2; // margin-bottom: 2px
+    let animated = false;
+
+    rows.forEach((row, newIdx) => {
+        const key = row.dataset.key;
+        const oldIdx = prevIdx[key];
+        if (oldIdx === undefined) return;
+        const delta = (oldIdx - newIdx) * rowHeight;
+        if (Math.abs(delta) < 1) return;
+
+        animated = true;
+        row.style.transition = 'none';
+        row.style.transform = `translateY(${delta}px)`;
+        row.offsetHeight; // force reflow
+        row.style.transition = 'transform 0.18s cubic-bezier(0.4,0,0.2,1)';
+        row.style.transform = 'translateY(0)';
+    });
+
+    if (animated) {
+        st.animating = true;
+        if (st.timer) clearTimeout(st.timer);
+        st.timer = setTimeout(() => {
+            st.animating = false;
+            st.timer = null;
+            // アニメーション後にtransformを完全クリア
+            container.querySelectorAll('.lb-row[data-key]').forEach(row => {
+                row.style.transition = '';
+                row.style.transform = '';
+            });
+        }, 200); // 180ms animation + 20ms buffer
+    }
+}
+
+function resetLbTracking() {
+    _lbPrevRank = null;
+    _lbPrevScore = null;
+    _lbScoreAccum = 0;
+    _lbAnimCurrent = 0;
+    _lbAnimTarget = 0;
+    if (_lbAnimInterval) { clearInterval(_lbAnimInterval); _lbAnimInterval = null; }
+}
+
+function showLbPopup(text, color, side, direction) {
+    const container = document.getElementById('leaderboard');
+    if (!container) return;
+    const myRow = document.getElementById('lb-my-row');
+    const pos = side === 'left' ? 'left:4px;' : 'right:4px;';
+    const moveY = direction === 'down' ? '14px' : '-14px';
+    // 自分の行の位置を基準にする
+    let verticalPos = 'bottom:-2px;';
+    if (myRow) {
+        verticalPos = `top:${myRow.offsetTop + myRow.offsetHeight / 2 - 4}px;`;
+    }
+    const popup = document.createElement('div');
+    popup.textContent = text;
+    popup.style.cssText = `position:absolute; ${pos} ${verticalPos} color:${color}; font-size:5pt; font-weight:bold; pointer-events:none; opacity:1; z-index:10; text-shadow:0 1px 3px rgba(0,0,0,0.9);`;
+    container.appendChild(popup);
+    requestAnimationFrame(() => {
+        popup.style.transition = 'all 1.5s ease-out';
+        popup.style.transform = `translateY(${moveY})`;
+        popup.style.opacity = '0';
+    });
+    setTimeout(() => popup.remove(), 1600);
+}
+
+function updateLeaderboard() {
     // players（AOI内）ではなく、playerScores（全体）を使用
     const allPlayersData = Object.entries(playerScores).map(([pid, data]) => ({
         id: Number(pid),
         ...data
     }));
 
-    const sorted = allPlayersData.filter(p => p.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);
-    const container = document.getElementById('lb-list');
-
-    let html = '';
-    sorted.forEach((p, i) => {
-        const rankIcon = (i === 0) ? '👑 ' : '';
-        let displayName = p.name || '???';
-        // 国旗絵文字対応: Intl.Segmenterでグラフェムクラスタ単位に分割
-        let graphemes;
-        if (_segmenter) {
-            graphemes = [..._segmenter.segment(displayName)].map(s => s.segment);
-        } else {
-            graphemes = Array.from(displayName);
-        }
-        if (graphemes.length > 10) {
-            displayName = graphemes.slice(0, 9).join('') + '…';
-        }
-        // 色情報はscoreboardDataに含まれているはずだが、無ければ黒
-        const pColor = p.color || '#000000';
-        
-        html += `
-            <div class="lb-row">
-                <span class="lb-name">
-                    <span style="display:inline-block; width:14px; height:14px; border-radius:50%; background-color:${pColor}; text-align:center; line-height:14px; margin-right:4px; font-size:10px; vertical-align:middle;">
-                        ${p.emoji || ''}
-                    </span>
-                    ${rankIcon}${displayName}
-                </span>
-                <span class="lb-score">${formatRawScore(p.score)}</span>
-            </div>
-        `;
-    });
-    container.innerHTML = html;
-
+    // チームスコア集計（TEAM表示 & サブリーダーボード両方で使用）
     const teamScores = {};
-    const teamColors = {}; // チームカラー保持用
+    const teamColors = {};
     const totalTeamCounts = {};
-    
-    // チームスコアもplayerScoresから計算
     allPlayersData.forEach(p => {
         if (p.team) {
             totalTeamCounts[p.team] = (totalTeamCounts[p.team] || 0) + 1;
@@ -801,31 +1505,42 @@ function updateLeaderboard() {
                 if (!teamScores[p.team]) teamScores[p.team] = 0;
                 teamScores[p.team] += p.score;
             }
-            // チームカラー取得（最初のプレイヤーの色を使う簡易ロジック）
             if (!teamColors[p.team] && p.color) {
                 teamColors[p.team] = p.color;
             }
         }
     });
 
+    const allSortedTeams = Object.keys(teamScores).map(team => ({
+        name: team, score: teamScores[team]
+    })).sort((a, b) => b.score - a.score);
+
+    const isTeamMode = (currentMode === 'TEAM');
+    const container = document.getElementById('lb-list');
     const teamContainer = document.getElementById('team-lb-container');
     const teamList = document.getElementById('lb-team-list');
 
-    // チーム別リーダーボード生成（上位5チームまで）
-    const sortedTeams = Object.keys(teamScores).map(team => ({
-        name: team,
-        score: teamScores[team]
-    })).sort((a, b) => b.score - a.score).slice(0, 5);
+    let html = '';
+    let curRank = null;
+    let curScore = null;
 
-    if (sortedTeams.length > 0) {
-        teamContainer.style.display = 'block';
-        let tHtml = '';
+    if (isTeamMode) {
+        // ── チーム戦: メイン欄にトップチームを表示 ──
+        const teamLimit = 5;
+        const sortedTeams = allSortedTeams.slice(0, teamLimit);
+
+        const me = players.find(p => p.id === myId);
+        const myTeam = me ? me.team : null;
+
         sortedTeams.forEach((t, i) => {
             const rankIcon = (i === 0) ? '👑 ' : '';
             const teamColor = teamColors[t.name] || '#fbbf24';
-            tHtml += `
-                <div class="lb-row">
+            const isMine = (myTeam && t.name === myTeam);
+            if (isMine) { curRank = i + 1; curScore = t.score; }
+            html += `
+                <div class="lb-row" data-key="t_${t.name}"${isMine ? ` id="lb-my-row" style="background:rgba(59,130,246,0.2); border-radius:3px; padding:0 2px;"` : ''}>
                     <span class="lb-name" style="font-weight:bold;">
+                        <span style="color:#64748b; margin-right:1px;">#${i + 1}</span>
                         <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background-color:${teamColor}; margin-right:4px; vertical-align:middle;"></span>
                         ${rankIcon}${t.name} (${totalTeamCounts[t.name] || 0}人)
                     </span>
@@ -833,9 +1548,155 @@ function updateLeaderboard() {
                 </div>
             `;
         });
-        teamList.innerHTML = tHtml;
-    } else {
+
+        // 所属チームがランク外の場合
+        const myTeamInTop = myTeam && sortedTeams.some(t => t.name === myTeam);
+        if (myTeam && !myTeamInTop && sortedTeams.length > 0) {
+            const myTeamIdx = allSortedTeams.findIndex(t => t.name === myTeam);
+            const myTeamRank = myTeamIdx >= 0 ? myTeamIdx + 1 : allSortedTeams.length + 1;
+            const myTeamScore = myTeamIdx >= 0 ? allSortedTeams[myTeamIdx].score : 0;
+            curRank = myTeamRank;
+            curScore = myTeamScore;
+
+            html += `<div style="border-top:1px solid rgba(255,255,255,0.1); margin-top:2px; padding-top:2px;">`;
+            html += `<div id="lb-my-row" class="lb-row" style="background:rgba(59,130,246,0.2); border-radius:3px; padding:0 2px;">`;
+            html += `<span class="lb-name" style="color:#94a3b8; font-size:5.5pt; font-weight:bold;">`;
+            html += `<span style="color:#64748b;">#${myTeamRank}</span> ${myTeam}`;
+            html += `</span>`;
+            html += `<span class="lb-score" style="font-size:5.5pt;">${formatRawScore(myTeamScore)}</span>`;
+            html += `</div></div>`;
+        }
+
+        flipUpdateDom(container, html);
         teamContainer.style.display = 'none';
+
+    } else {
+        // ── 個人戦 / DUO: メイン欄に個人ランキング表示 ──
+        const limit = (currentMode === 'SOLO') ? 5 : 2;
+        const allSorted = allPlayersData.filter(p => p.score > 0).sort((a, b) => b.score - a.score);
+        const sorted = allSorted.slice(0, limit);
+
+        sorted.forEach((p, i) => {
+            const rankIcon = (i === 0) ? '👑 ' : '';
+            let displayName = p.name || '???';
+            let graphemes;
+            if (_segmenter) {
+                graphemes = [..._segmenter.segment(displayName)].map(s => s.segment);
+            } else {
+                graphemes = Array.from(displayName);
+            }
+            if (graphemes.length > 10) {
+                displayName = graphemes.slice(0, 9).join('') + '…';
+            }
+            const pColor = p.color || '#000000';
+            const isMe = (p.id === myId);
+            if (isMe) { curRank = i + 1; curScore = p.score; }
+
+            html += `
+                <div class="lb-row" data-key="p_${p.id}"${isMe ? ` id="lb-my-row" style="background:rgba(59,130,246,0.2); border-radius:3px; padding:0 2px;"` : ''}>
+                    <span class="lb-name">
+                        <span style="color:#64748b; margin-right:1px;">#${i + 1}</span>
+                        <span style="display:inline-block; width:14px; height:14px; border-radius:50%; background-color:${pColor}; text-align:center; line-height:14px; margin-right:4px; font-size:10px; vertical-align:middle;">
+                            ${p.emoji || ''}
+                        </span>
+                        ${rankIcon}${displayName}
+                    </span>
+                    <span class="lb-score">${formatRawScore(p.score)}</span>
+                </div>
+            `;
+        });
+
+        // 自分がトップランカーに入っていない場合
+        const myInTop = sorted.some(p => p.id === myId);
+        if (!myInTop && myId) {
+            const myIdx = allSorted.findIndex(p => p.id === myId);
+            const myRank = myIdx >= 0 ? myIdx + 1 : allSorted.length + 1;
+            const myScore = myIdx >= 0 ? allSorted[myIdx].score : 0;
+            curRank = myRank;
+            curScore = myScore;
+            const topCount = sorted.length;
+            const positionsGap = myRank - topCount;
+
+            if (topCount > 0) {
+                html += `<div style="border-top:1px solid rgba(255,255,255,0.1); margin-top:2px; padding-top:2px;">`;
+                html += `<div id="lb-my-row" class="lb-row" style="background:rgba(59,130,246,0.2); border-radius:3px; padding:0 2px;">`;
+                html += `<span class="lb-name" style="color:#94a3b8; font-size:5.5pt;">`;
+                html += `<span style="color:#64748b;">#${myRank}</span> 自分`;
+                if (positionsGap > 0) html += ` <span style="color:#64748b;">(あと${positionsGap}位)</span>`;
+                html += `</span>`;
+                html += `<span class="lb-score" style="font-size:5.5pt;">${formatRawScore(myScore)}</span>`;
+                html += `</div></div>`;
+            }
+        }
+
+        flipUpdateDom(container, html);
+
+        // 個人戦/DUO: サブにチームリーダーボード表示
+        const sortedTeams = allSortedTeams.slice(0, 5);
+        if (sortedTeams.length > 0) {
+            teamContainer.style.display = 'block';
+            let tHtml = '';
+            sortedTeams.forEach((t, i) => {
+                const rankIcon = (i === 0) ? '👑 ' : '';
+                const teamColor = teamColors[t.name] || '#fbbf24';
+                tHtml += `
+                    <div class="lb-row" data-key="st_${t.name}">
+                        <span class="lb-name" style="font-weight:bold;">
+                            <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background-color:${teamColor}; margin-right:4px; vertical-align:middle;"></span>
+                            ${rankIcon}${t.name} (${totalTeamCounts[t.name] || 0}人)
+                        </span>
+                        <span class="lb-score">${formatRawScore(t.score)}</span>
+                    </div>
+                `;
+            });
+            flipUpdateDom(teamList, tHtml);
+        } else {
+            teamContainer.style.display = 'none';
+        }
+    }
+
+    // ── ランク/スコア変動ポップアップ ──
+    if (curRank !== null && curScore !== null) {
+        const now = Date.now();
+        // ランク変動 → 左側（上昇=赤↑、下降=青↓）
+        if (_lbPrevRank !== null && curRank !== _lbPrevRank && now > _lbRankPopupCD) {
+            if (curRank < _lbPrevRank) {
+                showLbPopup(`▲${_lbPrevRank - curRank}位`, '#f87171', 'left', 'up');
+            } else {
+                showLbPopup(`▼${curRank - _lbPrevRank}位`, '#60a5fa', 'left', 'down');
+            }
+            _lbRankPopupCD = now + 2000;
+        }
+        // スコア増減 → 右側（増=▲、減=▼）記号のみ表示 + スコアカウントアニメーション
+        if (_lbPrevScore !== null) {
+            _lbScoreAccum += curScore - _lbPrevScore;
+        }
+        if (now > _lbScorePopupCD && _lbScoreAccum !== 0) {
+            const pct = formatRawScore(Math.abs(_lbScoreAccum));
+            if (pct !== '0.00%') {
+                const dir = _lbScoreAccum > 0 ? 'up' : 'down';
+                showLbPopup(_lbScoreAccum > 0 ? '▲' : '▼', _lbScoreAccum > 0 ? '#f87171' : '#60a5fa', 'right', dir);
+            }
+            _lbScoreAccum = 0;
+            _lbScorePopupCD = now + 3000;
+        }
+        // スコアカウントアニメーション: 目標値を更新して滑らかにカウント
+        if (_lbAnimCurrent === 0 && _lbAnimTarget === 0) {
+            // 初回: いきなり表示
+            _lbAnimCurrent = curScore;
+        }
+        // 別カウントが動作中なら即座に完了させてから新カウント開始
+        if (_lbAnimInterval && curScore !== _lbAnimTarget) {
+            clearInterval(_lbAnimInterval);
+            _lbAnimInterval = null;
+            _lbAnimCurrent = _lbAnimTarget; // 前回目標にスナップ
+        }
+        _lbAnimTarget = curScore;
+        if (Math.abs(_lbAnimTarget - _lbAnimCurrent) >= 0.5 && !_lbAnimInterval) {
+            _lbAnimInterval = setInterval(_lbAnimTick, 40);
+        }
+        _lbPrevRank = curRank;
+        _lbPrevScore = curScore;
     }
 }
 
@@ -992,7 +1853,7 @@ function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, to
             <div style="margin-top:15px; border-top:1px solid #475569; padding-top:10px; text-align:center;">
                <div style="color:#cbd5e1; font-size:14px;">次の試合は...</div>
                <div style="font-size:24px; font-weight:bold; color:#facc15; text-shadow:0 0 10px rgba(250, 204, 21, 0.5); margin:5px 0;">
-                    ${nextMode === 'TEAM' ? '🚩 チーム戦' : (nextMode === 'DUO' ? '🤝 ペア戦' : '👑 個人戦')}
+                    ${nextMode === 'TEAM' ? '🚩 チーム戦' : (nextMode === 'DUO' ? '🤝 ペア戦' : '🚩 個人戦')}
                </div>
                ${isTeam ? `
                <div style="display:block; margin-top:10px;">
@@ -1033,7 +1894,7 @@ function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, to
     const chatInput = document.getElementById('chat-input');
     const chatBtn = chatInput ? chatInput.nextElementSibling : null;
     if (chatInput) {
-        if (hasSentChat) {
+        if (hasSentChat && !forceJet) {
             chatInput.disabled = true;
             chatInput.placeholder = "送信済み";
             if (chatBtn) {
@@ -1056,6 +1917,20 @@ function showResultScreen(rankings, winner, teamRankings, nextMode, allTeams, to
     }
 
     modal.style.display = 'flex';
+
+    // モーダル内スクロールでチップを非表示
+    if (!modal._hourlyTipScrollBound) {
+        modal.addEventListener('scroll', hideHourlyTip, true);
+        modal._hourlyTipScrollBound = true;
+    }
+
+    // 時間杯グラフを結果画面にも表示（チーム戦→チームタブ、個人戦→個人タブ）
+    const isTeamRound = teamRankings && teamRankings.length > 0;
+    // 勝者名を保存（チップ自動表示用）
+    resultWinnerName = isTeamRound
+        ? (teamRankings[0]?.name || null)
+        : (rankings && rankings[0] ? rankings[0].name.replace(/^\[.*?\]\s*/, '') : null);
+    loadHourlyGraph('result', isTeamRound ? 'team' : 'player');
 
     const msgEl = document.getElementById('next-round-msg');
     const countdownEl = document.getElementById('next-round-countdown');
@@ -1111,6 +1986,40 @@ function hideDeathScreen() {
     document.getElementById('deathScreen').style.display = 'none';
 }
 
+// ゴーストペナルティ画面
+let _ghostTimerIv = null;
+function showGhostScreen(seconds, count) {
+    const el = document.getElementById('ghostScreen');
+    const n = Math.round(seconds / 10);
+    document.getElementById('ghostPenaltyInfo').textContent = `${n}回 × 10秒`;
+    el.style.display = 'block';
+    let t = seconds;
+    document.getElementById('ghostTime').textContent = t;
+    if (_ghostTimerIv) clearInterval(_ghostTimerIv);
+    _ghostTimerIv = setInterval(() => {
+        t--;
+        const timeEl = document.getElementById('ghostTime');
+        if (timeEl) timeEl.textContent = Math.max(0, t);
+        if (t <= 0) {
+            clearInterval(_ghostTimerIv);
+            _ghostTimerIv = null;
+        }
+    }, 1000);
+}
+
+function hideGhostScreen() {
+    const el = document.getElementById('ghostScreen');
+    if (el) el.style.display = 'none';
+    if (_ghostTimerIv) { clearInterval(_ghostTimerIv); _ghostTimerIv = null; }
+}
+
+function updateGhostCountdown(seconds) {
+    const timeEl = document.getElementById('ghostTime');
+    if (timeEl && document.getElementById('ghostScreen').style.display !== 'none') {
+        timeEl.textContent = Math.max(0, seconds);
+    }
+}
+
 function drawResultMapFrame(ctx, rects, w, h, mapFlags) {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     if (!rects || !w) return;
@@ -1144,7 +2053,7 @@ function drawResultMapFrame(ctx, rects, w, h, mapFlags) {
 }
 
 function sendChat() {
-    if (hasSentChat) {
+    if (hasSentChat && !forceJet) {
         return;
     }
     const input = document.getElementById('chat-input');
@@ -1152,16 +2061,17 @@ function sendChat() {
     if (text.trim().length > 0) {
         socket.send(JSON.stringify({ type: 'chat', text: text }));
         input.value = '';
-        hasSentChat = true;
-
-        input.disabled = true;
-        input.placeholder = "送信済み";
-        const btn = input.nextElementSibling;
-        if (btn && btn.tagName === 'BUTTON') {
-            btn.disabled = true;
-            btn.style.background = '#475569';
-            btn.style.cursor = 'default';
-            btn.textContent = '済';
+        if (!forceJet) {
+            hasSentChat = true;
+            input.disabled = true;
+            input.placeholder = "送信済み";
+            const btn = input.nextElementSibling;
+            if (btn && btn.tagName === 'BUTTON') {
+                btn.disabled = true;
+                btn.style.background = '#475569';
+                btn.style.cursor = 'default';
+                btn.textContent = '済';
+            }
         }
     }
 }
@@ -1358,10 +2268,10 @@ function switchTeamTab(tab) {
 }
 
 function refreshTeamStats() {
-    const panel = document.getElementById('tc-panel-team');
-    if (!panel) return;
+    const statsEl = document.getElementById('tc-team-stats');
+    if (!statsEl) return;
     const me = players.find(p => p.id === myId);
-    if (!me || !me.team) { panel.innerHTML = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">チーム未所属</div>'; return; }
+    if (!me || !me.team) { statsEl.innerHTML = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">チーム未所属</div>'; return; }
 
     const gs = (world && world.gs) || 10;
     const totalCells = ((world && world.width) || 3000) / gs * ((world && world.height) || 3000) / gs;
@@ -1382,7 +2292,7 @@ function refreshTeamStats() {
     });
     html += '</table>';
     if (members.length === 0) html = '<div style="color:#64748b;font-size:12px;text-align:center;padding:10px;">メンバーなし</div>';
-    panel.innerHTML = html;
+    statsEl.innerHTML = html;
 }
 
 function addTeamBattleLog(msg) {
@@ -1511,7 +2421,7 @@ function updateModeDisplay(mode) {
     if (!mode) return;
     currentMode = mode;
     const el = document.getElementById('mode-display');
-    const map = { 'SOLO': '👑 個人戦 (SOLO)', 'DUO': '🤝 ペア戦 (DUO)', 'TEAM': '🚩 チーム戦 (TEAM)' };
+    const map = { 'SOLO': '🚩 個人戦 (SOLO)', 'DUO': '🤝 ペア戦 (DUO)', 'TEAM': '🚩 チーム戦 (TEAM)' };
     if (el) el.textContent = map[mode] || map['SOLO'];
 
     const teamInput = document.getElementById('team-input');

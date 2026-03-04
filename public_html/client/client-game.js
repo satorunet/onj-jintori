@@ -359,6 +359,10 @@ function triggerChainDetach() {
 }
 
 function sendInput() {
+    // ゴースト状態ではサーバーへ送信しない（ローカル移動のみ）
+    const meCheck = players.find(p => p.id === myId);
+    if (meCheck && (meCheck.isGhost || meCheck.state === 'ghost' || meCheck.isSpawnWait)) return;
+
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const dx = inputState.dx;
@@ -477,6 +481,38 @@ function loop() {
         }
     });
     updateCamera();
+
+    // ゴースト状態のローカル移動更新
+    {
+        const meGhost = players.find(p => p.id === myId);
+        if (meGhost && (meGhost.isGhost || meGhost.state === 'ghost') && ghostInitialized) {
+            // ゴム紐物理: 距離が離れるほど引き返す力が強くなる（弾性バネ）
+            const mag = Math.sqrt(inputState.dx * inputState.dx + inputState.dy * inputState.dy);
+            const ddx = ghostOriginX - ghostLocalX;
+            const ddy = ghostOriginY - ghostLocalY;
+            const SPRING_K = 1.5;   // バネ定数: 距離1pxあたりの加速度(px/s²)
+            const INPUT_ACCEL = 400; // 入力による最大加速度(px/s²)
+            const DAMPING = 5;       // 減衰係数（速度に比例した摩擦）
+            const springFX = ddx * SPRING_K;
+            const springFY = ddy * SPRING_K;
+            let inputFX = 0, inputFY = 0;
+            if (mag > 0.1) {
+                inputFX = (inputState.dx / mag) * INPUT_ACCEL;
+                inputFY = (inputState.dy / mag) * INPUT_ACCEL;
+            }
+            ghostVelX += (inputFX + springFX - DAMPING * ghostVelX) * dt;
+            ghostVelY += (inputFY + springFY - DAMPING * ghostVelY) * dt;
+            ghostLocalX += ghostVelX * dt;
+            ghostLocalY += ghostVelY * dt;
+            // 移動範囲はビューポート内のみ（画面の端を超えない）
+            const vw = width / ZOOM_LEVEL;
+            const vh = height / ZOOM_LEVEL;
+            const pad = 16;
+            ghostLocalX = Math.max(ghostCameraX + pad, Math.min(ghostCameraX + vw - pad, ghostLocalX));
+            ghostLocalY = Math.max(ghostCameraY + pad, Math.min(ghostCameraY + vh - pad, ghostLocalY));
+        }
+        // ghostInitializedのリセットはghost_endメッセージ受信時のみ行う（競合防止）
+    }
 
     // トップランカー判定（サーバーから受信した全プレイヤースコアを使用）
     // idは数値のshortId（フルID廃止済み）
@@ -676,9 +712,17 @@ function loop() {
         ctx.restore();
     });
 
-    // 領地を色ごとにグループ化して描画
+    // 領地描画（2パス方式: 画像なし→色、画像あり→パターン）
+    // ownerIdごとに画像があるか判定
+    const imageOwners = new Set();
+    territories.forEach(t => {
+        if (t.ownerId && playerImages[t.ownerId]) imageOwners.add(t.ownerId);
+    });
+
+    // Pass 1: 画像なしプレイヤー → 従来の色別グループ描画
     const territoryGroups = {};
     territories.forEach(t => {
+        if (imageOwners.has(t.ownerId)) return; // 画像ありはPass2で
         const k = t.color || '#cccccc';
         if (!territoryGroups[k]) territoryGroups[k] = [];
         territoryGroups[k].push(t);
@@ -706,6 +750,113 @@ function loop() {
         ctx.fill();
         ctx.restore();
     });
+
+    // Pass 2: 画像ありプレイヤー → ownerId別にパターン描画 + チーム統合境界線
+    if (imageOwners.size > 0) {
+        const ownerTerritories = {};
+        territories.forEach(t => {
+            if (!imageOwners.has(t.ownerId)) return;
+            if (!ownerTerritories[t.ownerId]) ownerTerritories[t.ownerId] = [];
+            ownerTerritories[t.ownerId].push(t);
+        });
+
+        const gs = (typeof gridSize !== 'undefined' && gridSize) ? gridSize : 10;
+        const isTeam = currentMode !== 'SOLO';
+
+        // チーム戦時: 同チームの全セルを統合したcellSetを事前構築
+        const teamCellSets = {};
+        if (isTeam) {
+            territories.forEach(t => {
+                const p = players.find(pp => pp.id === t.ownerId);
+                const team = p && p.team ? p.team : `_solo_${t.ownerId}`;
+                if (!teamCellSets[team]) teamCellSets[team] = new Set();
+                const cols = Math.round(t.w / gs);
+                for (let c = 0; c < cols; c++) teamCellSets[team].add(`${t.x + c * gs},${t.y}`);
+            });
+        }
+
+        // 境界線描画済みチーム（チーム戦時に重複描画を防ぐ）
+        const borderDrawn = new Set();
+
+        Object.entries(ownerTerritories).forEach(([ownerIdStr, group]) => {
+            const ownerId = Number(ownerIdStr);
+            const img = playerImages[ownerId];
+            if (!img) return;
+            // lazy パターン作成
+            if (playerPatterns[ownerId] === null || playerPatterns[ownerId] === undefined) {
+                try {
+                    playerPatterns[ownerId] = ctx.createPattern(img, 'repeat');
+                } catch (e) {
+                    playerPatterns[ownerId] = false; // 作成失敗マーク
+                }
+            }
+            const pattern = playerPatterns[ownerId];
+
+            ctx.beginPath();
+            let hasVisible = false;
+            group.forEach(t => {
+                if (t.points && t.points.length > 0) {
+                    if (t.x + t.w < viewLeft || t.x > viewRight || t.y + t.h < viewTop || t.y > viewBottom) return;
+                    hasVisible = true;
+                    ctx.moveTo(t.points[0].x, t.points[0].y);
+                    for (let i = 1; i < t.points.length; i++) ctx.lineTo(t.points[i].x, t.points[i].y);
+                }
+            });
+            if (!hasVisible) return;
+            ctx.save();
+            ctx.globalAlpha = 0.45;
+            if (pattern) {
+                ctx.fillStyle = pattern;
+            } else {
+                ctx.fillStyle = group[0].color || '#cccccc';
+            }
+            ctx.fill();
+
+            // 外周の境界線のみ描画（チーム戦時はチーム単位で統合）
+            const ownerPlayer = players.find(pp => pp.id === ownerId);
+            const teamKey = (isTeam && ownerPlayer && ownerPlayer.team) ? ownerPlayer.team : `_solo_${ownerId}`;
+
+            if (!borderDrawn.has(teamKey)) {
+                borderDrawn.add(teamKey);
+                const borderColor = group[0].color || '#cccccc';
+                // 境界判定用のcellSet（チーム戦時はチーム全体、個人戦時はowner個人）
+                let cellSet;
+                let borderTerritories;
+                if (isTeam && teamCellSets[teamKey]) {
+                    cellSet = teamCellSets[teamKey];
+                    // チーム全員の領地を対象
+                    borderTerritories = territories.filter(t => {
+                        const p = players.find(pp => pp.id === t.ownerId);
+                        return p && p.team === teamKey;
+                    });
+                } else {
+                    cellSet = new Set();
+                    group.forEach(t => {
+                        const cols = Math.round(t.w / gs);
+                        for (let c = 0; c < cols; c++) cellSet.add(`${t.x + c * gs},${t.y}`);
+                    });
+                    borderTerritories = group;
+                }
+                ctx.globalAlpha = 0.7;
+                ctx.strokeStyle = borderColor;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                borderTerritories.forEach(t => {
+                    if (t.x + t.w < viewLeft || t.x > viewRight || t.y + t.h < viewTop || t.y > viewBottom) return;
+                    const cols = Math.round(t.w / gs);
+                    for (let c = 0; c < cols; c++) {
+                        const cx = t.x + c * gs;
+                        if (!cellSet.has(`${cx},${t.y - gs}`)) { ctx.moveTo(cx, t.y); ctx.lineTo(cx + gs, t.y); }
+                        if (!cellSet.has(`${cx},${t.y + gs}`)) { ctx.moveTo(cx, t.y + gs); ctx.lineTo(cx + gs, t.y + gs); }
+                    }
+                    if (!cellSet.has(`${t.x - gs},${t.y}`)) { ctx.moveTo(t.x, t.y); ctx.lineTo(t.x, t.y + gs); }
+                    if (!cellSet.has(`${t.x + t.w},${t.y}`)) { ctx.moveTo(t.x + t.w, t.y); ctx.lineTo(t.x + t.w, t.y + gs); }
+                });
+                ctx.stroke();
+            }
+            ctx.restore();
+        });
+    }
 
     // チェーン接続線の描画
     (() => {
@@ -758,8 +909,81 @@ function loop() {
     })();
 
     players.forEach(p => {
-        // waiting状態、名前がない(Unknown)、座標が0,0のプレイヤーは表示しない
+        // waiting・ゴースト状態、名前がない(Unknown)、座標が0,0のプレイヤーは表示しない
         if (p.state === 'waiting') return;
+        if (p.isGhost || p.state === 'ghost') {
+            // 他プレイヤーのゴーストは非表示。自分のみ表示
+            if (p.id !== myId || !ghostInitialized) return;
+            const gx = ghostLocalX;
+            const gy = ghostLocalY;
+            const ox = ghostOriginX;
+            const oy = ghostOriginY;
+            const color = p.color || '#818cf8';
+            const dist = Math.hypot(gx - ox, gy - oy);
+
+            // ① リボーン地点の本体（薄い透明）
+            ctx.save();
+            ctx.globalAlpha = 0.18;
+            ctx.translate(ox, oy);
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(0, 0, 14, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.font = getGameFont(18);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(p.emoji || '👻', 0, 2);
+            ctx.restore();
+
+            // ② 紐（点線）: ゆるいカーブでリボーン地点から分身へ
+            if (dist > 8) {
+                const mx = (ox + gx) / 2;
+                const my = (oy + gy) / 2 + dist * 0.25; // 下にたわむ
+                const dashOffset = -(Date.now() / 55) % 20;
+                ctx.save();
+                ctx.globalAlpha = 0.45;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([5, 7]);
+                ctx.lineDashOffset = dashOffset;
+                ctx.beginPath();
+                ctx.moveTo(ox, oy);
+                ctx.quadraticCurveTo(mx, my, gx, gy);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+            }
+
+            // ③ 分身（移動する側）
+            if (gx + 30 < viewLeft || gx - 30 > viewRight || gy + 30 < viewTop || gy - 30 > viewBottom) return;
+            ctx.save();
+            ctx.globalAlpha = 0.55;
+            ctx.translate(gx, gy);
+            // 点線の輪郭
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(0, 0, 17, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 本体
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(0, 0, 14, 0, Math.PI * 2);
+            ctx.fill();
+            // 絵文字
+            ctx.font = getGameFont(18);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(p.emoji || '👻', 0, 2);
+            // 名前
+            ctx.fillStyle = '#fff';
+            ctx.font = getGameFont(11);
+            ctx.fillText(p.name || '', 0, -26);
+            ctx.restore();
+            return;
+        }
         if (!p.name || p.name === '' || p.name === 'Unknown') return;
         if (p.x === 0 && p.y === 0) return;
 
@@ -822,6 +1046,38 @@ function loop() {
             return;
         } else {
             p.deathTime = 0;
+        }
+
+        // spawnWait状態: 透明でフェードイン（2秒かけて徐々に出現）
+        if (p.isSpawnWait) {
+            if (!p._spawnWaitStart) p._spawnWaitStart = Date.now();
+            const elapsed = Date.now() - p._spawnWaitStart;
+            const alpha = Math.min(0.35, elapsed / 2000 * 0.35); // 0→0.35
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.translate(p.x, p.y);
+            // 点線の輪郭
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = p.color || '#818cf8';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, 16, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 本体
+            ctx.fillStyle = p.color || '#818cf8';
+            ctx.beginPath();
+            ctx.arc(0, 0, 14, 0, Math.PI * 2);
+            ctx.fill();
+            // 絵文字
+            ctx.font = getGameFont(18);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(p.emoji || '😐', 0, 2);
+            ctx.restore();
+            return;
+        } else {
+            p._spawnWaitStart = 0;
         }
 
         const trailSource = (p.pixelTrail && p.pixelTrail.length > 2) ? p.pixelTrail : p.trail;
@@ -893,7 +1149,7 @@ function loop() {
             // リーダーがJET中ならフォロワーもJETエフェクト
             const leaderJet = p.chainRole === 2 && p.chainLeaderId &&
                 players.some(lp => lp.id === p.chainLeaderId && lp.machBoosting);
-            const isJet = p.machBoosting || leaderJet;
+            const isJet = !forceJet && (p.machBoosting || leaderJet);
 
             // ブースト中は虹色のラインエフェクト（低パフォーマンス時は簡略化）
             if (isJet) {
@@ -915,7 +1171,7 @@ function loop() {
                     ctx.shadowColor = '#ffffff';
                     ctx.shadowBlur = 40;
                 }
-            } else if (p.boosting) {
+            } else if (p.boosting && !forceJet) {
                 if (isLowPerformance) {
                     ctx.strokeStyle = '#ffff00';
                 } else {
@@ -958,8 +1214,8 @@ function loop() {
         }
 
         // ブースト中のエフェクト（低パフォーマンス時は簡略化）
-        const isJetBody = p.machBoosting || (p.chainRole === 2 && p.chainLeaderId &&
-            players.some(lp => lp.id === p.chainLeaderId && lp.machBoosting));
+        const isJetBody = !forceJet && (p.machBoosting || (p.chainRole === 2 && p.chainLeaderId &&
+            players.some(lp => lp.id === p.chainLeaderId && lp.machBoosting)));
         if (isJetBody) {
             // マッハブースト: 超派手エフェクト
             if (!isLowPerformance) {
@@ -1000,7 +1256,7 @@ function loop() {
                 ctx.lineWidth = 4;
                 ctx.stroke();
             }
-        } else if (p.boosting) {
+        } else if (p.boosting && !forceJet) {
             if (!isLowPerformance) {
                 const pulseSize = 25 + Math.sin(Date.now() / 50) * 5;
                 ctx.beginPath();
@@ -1064,7 +1320,7 @@ function loop() {
 
         let displayName = p.name || 'Unknown';
         // トップランカー判定（id統一済み）
-        if (p.id === topId || (topTeam && p.team === topTeam)) displayName = '👑 ' + displayName;
+        if (currentMode !== 'SOLO' && (p.id === topId || (topTeam && p.team === topTeam))) displayName = '👑 ' + displayName;
         ctx.fillText(displayName, 0, -25);
         ctx.shadowBlur = 0;
 
@@ -1129,11 +1385,48 @@ function loop() {
 
 // ブーストボタンを描画
 function drawBoostGauge(ctx) {
+    // 🐢カメさんモード中はブーストボタンを非表示
+    if (turtleMode) return;
+    // ゴースト状態中はブーストゲージを表示しない
+    const meForBoost = players.find(p => p.id === myId);
+    if (meForBoost && (meForBoost.isGhost || meForBoost.state === 'ghost')) return;
+
+    // 🚀強制ジェットモード: 常にJET満タン表示
+    if (forceJet) {
+        const gaugeWidth = 140, gaugeHeight = 36;
+        const gaugeX = (width - gaugeWidth) / 2, gaugeY = height - 65;
+        ctx.save();
+        const pulse = 0.85 + Math.sin(Date.now() / 200) * 0.15;
+        const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
+        gradient.addColorStop(0, '#ffaa00');
+        gradient.addColorStop(1, '#ff6600');
+        ctx.fillStyle = gradient;
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = 15 * pulse;
+        ctx.beginPath();
+        ctx.roundRect(gaugeX, gaugeY, gaugeWidth, gaugeHeight, 10);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 + Math.sin(Date.now() / 150) * 0.4})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#993300';
+        ctx.shadowBlur = 3;
+        ctx.fillText('\ud83d\ude80 JET', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+        return;
+    }
+
     const gaugeWidth = 140;
     const gaugeHeight = 36;
     const gaugeX = (width - gaugeWidth) / 2;
     const gaugeY = height - 65;
-    
+
     ctx.save();
     
     if (machBoosting) {
@@ -1225,7 +1518,7 @@ function drawBoostGauge(ctx) {
         ctx.textBaseline = 'middle';
         ctx.fillText(`${boostCooldownSec}秒`, gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
         
-    } else if (jetChargeSec >= 20) {
+    } else if (jetEnabled && jetChargeSec >= 20) {
         // ジェット使用可能: オレンジ系のJETボタン（脈動エフェクト）
         const pulse = 0.85 + Math.sin(Date.now() / 200) * 0.15;
         const gradient = ctx.createLinearGradient(gaugeX, gaugeY, gaugeX, gaugeY + gaugeHeight);
@@ -1278,7 +1571,7 @@ function drawBoostGauge(ctx) {
         ctx.shadowBlur = 2;
         ctx.fillText('\ud83d\ude80 JET', gaugeX + gaugeWidth / 2, gaugeY + gaugeHeight / 2);
         ctx.shadowBlur = 0;
-    } else if (jetChargeSec > 0) {
+    } else if (jetEnabled && jetChargeSec > 0) {
         // ジェットチャージ中: 緑→オレンジのグラデーション進行ボタン
         const chargeProgress = jetChargeSec / 20;
 

@@ -480,7 +480,7 @@ function broadcast(msg) {
 // チーム統計
 // ============================================================
 function getTeamStats() {
-    const counts = { '🇯🇵たぬき': 0 };   // 「🇯🇵たぬき」は常に表示
+    const counts = { '🍂たぬき': 0 };   // 「🍂たぬき」は常に表示
     Object.values(state.players).forEach(p => {
         const t = p.requestedTeam || p.team;
         if (t) counts[t] = (counts[t] || 0) + 1;
@@ -1006,8 +1006,73 @@ async function saveRankingsToDB(mode, rankings, teamRankings, playerCount) {
         await saveRoundMinimap(conn, roundId);
         conn.release();
         console.log(`[DB] Saved round #${roundId}`);
+        // キャッシュ再構築（非同期・ノンブロッキング）
+        rebuildWinsCache();
     } catch (e) {
         console.error('[DB] Failed to save rankings:', e.message);
+    }
+}
+
+async function rebuildWinsCache() {
+    if (!dbPool) return;
+    let conn;
+    try {
+        conn = await dbPool.getConnection();
+
+        // トランザクションで一括更新（DELETE中に空データを返さない）
+        await conn.beginTransaction();
+
+        // 時間杯キャッシュ再構築（直近48時間分）
+        await conn.query('DELETE FROM wins_hourly_cache');
+        await conn.query(`
+            INSERT INTO wins_hourly_cache (type, hour_slot, hour_num, name, wins)
+            SELECT 'team', DATE_FORMAT(r.played_at, '%Y-%m-%d %H:00:00'), HOUR(r.played_at), tr.team_name, COUNT(*)
+            FROM team_rankings tr
+            JOIN rounds r ON tr.round_id = r.id
+            WHERE tr.rank_position = 1
+              AND r.mode = 'TEAM'
+              AND r.played_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            GROUP BY DATE_FORMAT(r.played_at, '%Y-%m-%d %H:00:00'), HOUR(r.played_at), tr.team_name
+        `);
+        await conn.query(`
+            INSERT INTO wins_hourly_cache (type, hour_slot, hour_num, name, wins)
+            SELECT 'player', DATE_FORMAT(r.played_at, '%Y-%m-%d %H:00:00'), HOUR(r.played_at), pr.player_name, COUNT(*)
+            FROM player_rankings pr
+            JOIN rounds r ON pr.round_id = r.id
+            WHERE pr.rank_position = 1
+              AND r.played_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            GROUP BY DATE_FORMAT(r.played_at, '%Y-%m-%d %H:00:00'), HOUR(r.played_at), pr.player_name
+        `);
+
+        // 1日杯キャッシュ再構築（直近30日分）
+        await conn.query('DELETE FROM wins_daily_cache');
+        await conn.query(`
+            INSERT INTO wins_daily_cache (type, day_slot, day_label, name, wins)
+            SELECT 'team', DATE(r.played_at), DATE_FORMAT(r.played_at, '%m/%d'), tr.team_name, COUNT(*)
+            FROM team_rankings tr
+            JOIN rounds r ON tr.round_id = r.id
+            WHERE tr.rank_position = 1
+              AND r.mode = 'TEAM'
+              AND r.played_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            GROUP BY DATE(r.played_at), DATE_FORMAT(r.played_at, '%m/%d'), tr.team_name
+        `);
+        await conn.query(`
+            INSERT INTO wins_daily_cache (type, day_slot, day_label, name, wins)
+            SELECT 'player', DATE(r.played_at), DATE_FORMAT(r.played_at, '%m/%d'), pr.player_name, COUNT(*)
+            FROM player_rankings pr
+            JOIN rounds r ON pr.round_id = r.id
+            WHERE pr.rank_position = 1
+              AND r.played_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            GROUP BY DATE(r.played_at), DATE_FORMAT(r.played_at, '%m/%d'), pr.player_name
+        `);
+
+        await conn.commit();
+        console.log('[DB] Wins cache rebuilt (hourly 48h + daily 30d)');
+    } catch (e) {
+        console.error('[DB] Failed to rebuild wins cache:', e.message);
+        if (conn) try { await conn.rollback(); } catch (_) {}
+    } finally {
+        if (conn) conn.release();
     }
 }
 
@@ -1049,9 +1114,37 @@ async function initDB() {
                 INDEX idx_country (cf_country)
             )
         `);
-        
+
+        // 時間杯キャッシュテーブル
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS wins_hourly_cache (
+                type ENUM('team', 'player') NOT NULL,
+                hour_slot DATETIME NOT NULL,
+                hour_num TINYINT NOT NULL,
+                name VARCHAR(50) NOT NULL,
+                wins INT NOT NULL DEFAULT 0,
+                PRIMARY KEY (type, hour_slot, name),
+                INDEX idx_hour_slot (hour_slot)
+            )
+        `);
+
+        // 1日杯キャッシュテーブル
+        await conn.query(`
+            CREATE TABLE IF NOT EXISTS wins_daily_cache (
+                type ENUM('team', 'player') NOT NULL,
+                day_slot DATE NOT NULL,
+                day_label VARCHAR(10) NOT NULL,
+                name VARCHAR(50) NOT NULL,
+                wins INT NOT NULL DEFAULT 0,
+                PRIMARY KEY (type, day_slot, name),
+                INDEX idx_day_slot (day_slot)
+            )
+        `);
+
         conn.release();
-        console.log('[DB] Tables initialized (minimaps, afk_timeouts)');
+        console.log('[DB] Tables initialized (minimaps, afk_timeouts, wins_cache)');
+        // 起動時にキャッシュ初期構築
+        rebuildWinsCache();
     } catch (e) {
         console.error('[DB] Init error:', e);
     }
@@ -1068,7 +1161,7 @@ module.exports = {
     // ゲームロジック
     initGrid, rebuildTerritoryRects, broadcast, getTeamStats, generateMinimapBitmap, calculateMapFlags, attemptCapture,
     // DB
-    saveRankingsToDB, initDB,
+    saveRankingsToDB, initDB, rebuildWinsCache,
     // 定数参照
     serverStartTime
 };

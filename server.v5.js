@@ -28,7 +28,7 @@ const {
     CHAIN_SPACING, CHAIN_MAX_LENGTH, CHAIN_PATH_HISTORY_SIZE,
     SWARM_BOT_COUNT, SWARM_CHAIN_SPACING, SWARM_TEAM_NAME, SWARM_TEAM_COLOR,
     SWARM_ATTACK_RANGE, SWARM_REJOIN_TIMEOUT,
-    GAME_MODES, FORCE_TEAM, HUMAN_VS_BOT, DEBUG_MODE, STATS_MODE, TEAM_COLORS, TANUKI_TEAM_NAME,
+    GAME_MODES, FORCE_TEAM, HUMAN_VS_BOT, DEBUG_MODE, STATS_MODE, TEAM_COLORS, TANUKI_TEAM_NAME, JET_ENABLED, FORCE_JET,
     state, bandwidthStats, dbPool
 } = config;
 
@@ -49,6 +49,23 @@ try {
     server = http.createServer(api.handleHttpRequest);
 }
 
+// ============================================================
+// ゴーストペナルティ設定（早死対策）
+// ============================================================
+const QUICK_DEATH_THRESHOLD = 5;           // 秒: これ未満の生存時間で「早死」判定
+const GHOST_PENALTY_BASE = 10;             // 秒: ペナルティ初回時間。以降 +10秒ずつ増加
+const GHOST_PENALTY_MAX = 10;              // 秒: ペナルティ最大時間（10秒）
+const GHOST_FREE_COUNT = 2;               // 初回N回まではペナルティなし（カウントのみ）
+const GHOST_MAX_STACK = 20;              // 最大スタック数
+// ※ ペナルティ = min(GHOST_PENALTY_BASE * (count - GHOST_FREE_COUNT), GHOST_PENALTY_MAX) 秒
+// ※ カウントは通常プレイ(10秒以上生還)で-1（0未満にはならない）。時間経過ではリセットしない
+
+// IP別早死ペナルティデータ: Map<ip, { count, penaltyUntil, lastQuickDeathTime }>
+const ipQuickDeathData = new Map();
+
+// IP別初回スポーン位置: Map<ip, { x, y, team }>（名前・セッション変更をまたいで固定、チーム変更時リセット）
+const ipInitialSpawn = new Map();
+
 // WebSocketサーバー
 const wss = new WebSocket.Server({
     server,
@@ -67,6 +84,7 @@ const wss = new WebSocket.Server({
 game.setWss(wss);
 game.setMsgpack(msgpack);
 network.setDependencies(game, msgpack, wss);
+network.setGhostPenaltyRef(ipQuickDeathData, GHOST_FREE_COUNT, GHOST_PENALTY_BASE, GHOST_PENALTY_MAX, ipInitialSpawn);
 stats.setup({ config, state, bandwidthStats, dbPool });
 cpu.setDependencies(game);
 
@@ -356,7 +374,8 @@ setInterval(() => {
 
         if (p.chainRole !== 'follower') {
         // AFK自動移動（hasMovedSinceSpawnは変更しない＝AFK判定に影響しない）
-        if (!p.hasMovedSinceSpawn && !p.autoRun && p.spawnTime && (now - p.spawnTime > 1000)) {
+        // spawnWait中はスキップ
+        if (!p.hasMovedSinceSpawn && !p.autoRun && p.spawnTime && (now - p.spawnTime > 1000) && !(p.spawnWaitUntil && now < p.spawnWaitUntil)) {
             const angle = Math.random() * Math.PI * 2;
             p.dx = Math.cos(angle);
             p.dy = Math.sin(angle);
@@ -365,7 +384,7 @@ setInterval(() => {
 
         // ブースト/ジェット状態の判定
         const personalBoosting = p.boostUntil && now < p.boostUntil;
-        const isJetting = p.jetUntil && now < p.jetUntil;
+        const isJetting = FORCE_JET || (JET_ENABLED && p.jetUntil && now < p.jetUntil);
         const isBoosting = state.highSpeedEvent || personalBoosting || isJetting;
         let currentSpeed;
         if (isJetting) {
@@ -381,12 +400,14 @@ setInterval(() => {
         p.jetting = isJetting;
         p.machBoosting = isJetting || (state.highSpeedEvent && personalBoosting);  // ジェット/マッハ状態フラグ
 
-        // ジェットチャージ追跡: ブースト使用可能状態の継続時間
-        const boostReady = !personalBoosting && !isJetting && (!p.boostCooldownUntil || now >= p.boostCooldownUntil);
-        if (boostReady) {
-            if (!p.boostReadySince) p.boostReadySince = now;
-        } else {
-            p.boostReadySince = 0;
+        // ジェットチャージ追跡: ブースト使用可能状態の継続時間（JET_ENABLED時のみ）
+        if (JET_ENABLED) {
+            const boostReady = !personalBoosting && !isJetting && (!p.boostCooldownUntil || now >= p.boostCooldownUntil);
+            if (boostReady) {
+                if (!p.boostReadySince) p.boostReadySince = now;
+            } else {
+                p.boostReadySince = 0;
+            }
         }
 
         let nextX = p.x + p.dx * currentSpeed * dt;
@@ -674,7 +695,8 @@ function respawnPlayer(p, fullReset = false) {
     p.spawnTime = Date.now();
     p.hasMovedSinceSpawn = false;
     p.autoRun = false;
-    p.invulnerableUntil = p.isCpu ? 0 : Date.now() + 3000;
+    p.spawnWaitUntil = p.isCpu ? 0 : Date.now() + 2000;  // 2秒間出現待機（透明・移動不可）
+    p.invulnerableUntil = p.isCpu ? 0 : Date.now() + 5000;  // 出現待機2秒+無敵3秒=5秒
     p.boostCooldownUntil = Date.now() + 5000;  // スポーン後5秒間ブースト使用不可
     p.boostUntil = 0;
     p.jetUntil = 0;
@@ -744,6 +766,65 @@ function respawnPlayer(p, fullReset = false) {
     if (!safe && bestCandidate) { p.x = bestCandidate.x; p.y = bestCandidate.y; safe = true; }
     if (!safe) { p.x = 1000; p.y = 1000; }
 
+    // IP別スポーン位置の固定（全プレイヤー共通・チーム変更時リセット）
+    if (p.ip && p.ip !== 'unknown' && !p.isCpu) {
+        const savedSpawn = ipInitialSpawn.get(p.ip);
+        const currentTeam = p.team || '';
+        if (savedSpawn && savedSpawn.team === currentTeam) {
+            // 同一チーム: 保存済みの位置にリスポーン
+            p.x = savedSpawn.x;
+            p.y = savedSpawn.y;
+        } else {
+            // 初回 or チーム変更: 今のランダム位置を保存
+            ipInitialSpawn.set(p.ip, { x: p.x, y: p.y, team: currentTeam });
+        }
+        p.initialSpawnX = p.x;
+        p.initialSpawnY = p.y;
+    } else if (!p.initialSpawnX) {
+        p.initialSpawnX = p.x;
+        p.initialSpawnY = p.y;
+    }
+
+    // ゴーストペナルティチェック（CPU除く、強制ジェット時はスキップ）
+    if (!p.isCpu && !FORCE_JET) {
+        const ghostRec = p.ip && p.ip !== 'unknown' ? ipQuickDeathData.get(p.ip) : null;
+        const remainingMs = ghostRec ? ghostRec.penaltyUntil - Date.now() : 0;
+        if (remainingMs > 0) {
+            // ゴースト状態: 透明・陣地なし・移動不可
+            p.state = 'ghost';
+            p.isGhost = true;
+            p.ghostUntil = ghostRec.penaltyUntil;
+            // // ペナルティ発動中はチャット禁止（count > GHOST_FREE_COUNT）
+            // if (ghostRec.count > GHOST_FREE_COUNT) p.chatMuted = true;
+            state.roundParticipants.add(p.id);
+            console.log(`[GHOST] ${p.name} (IP:${p.ip}) ゴースト状態 ${Math.ceil(remainingMs/1000)}s count=${ghostRec.count}`);
+            // ゴースト終了タイマー
+            setTimeout(() => {
+                const pp = state.players[p.id];
+                if (pp && pp.isGhost) activateFromGhost(pp);
+            }, remainingMs + 100);
+            // ゴースト開始通知をクライアントへ
+            if (p.ws && p.ws.readyState === 1) {
+                p.ws.send(JSON.stringify({
+                    type: 'ghost_penalty',
+                    seconds: Math.ceil(remainingMs / 1000),
+                    count: ghostRec.count,
+                    x: Math.round(p.initialSpawnX || p.x),
+                    y: Math.round(p.initialSpawnY || p.y)
+                }));
+            }
+            // チームログ送信
+            if (p.team && p.ws && p.ws.readyState === 1) {
+                const chatLog = state.teamChatLog[p.team] || [];
+                const battleLog = state.teamBattleLog[p.team] || [];
+                if (chatLog.length > 0 || battleLog.length > 0) {
+                    p.ws.send(JSON.stringify({ type: 'team_log_sync', chat: chatLog, battle: battleLog }));
+                }
+            }
+            return;
+        }
+    }
+
     // 初期領地（約70px四方を維持）
     const spawnR = Math.max(3, Math.round(35 / GRID_SIZE));
     const startGx = game.toGrid(p.x), startGy = game.toGrid(p.y);
@@ -772,6 +853,56 @@ function respawnPlayer(p, fullReset = false) {
         if (chatLog.length > 0 || battleLog.length > 0) {
             p.ws.send(JSON.stringify({ type: 'team_log_sync', chat: chatLog, battle: battleLog }));
         }
+    }
+}
+
+// ============================================================
+// ゴースト→アクティブ化
+// ============================================================
+function activateFromGhost(p) {
+    if (!p || !p.isGhost) return;
+    console.log(`[GHOST] ${p.name} ゴースト解除 → アクティブ化`);
+    // 初回スポーン地点に固定配置
+    if (p.initialSpawnX) {
+        p.x = p.initialSpawnX;
+        p.y = p.initialSpawnY;
+    }
+    p.isGhost = false;
+    p.ghostUntil = 0;
+    p.state = 'active';
+    p.spawnTime = Date.now();      // AFK判定リセット
+    p.hasMovedSinceSpawn = false;
+    p.afkDeaths = 0;
+    p.spawnWaitUntil = Date.now() + 2000;
+    p.invulnerableUntil = Date.now() + 5000;
+    p.boostCooldownUntil = Date.now() + 7000;  // ゴースト明けもクールダウンリセット
+    p.boostReadySince = 0;
+    p.boostUntil = 0;
+    p.jetUntil = 0;
+
+    // 初期領地を付与
+    const spawnR = Math.max(3, Math.round(35 / GRID_SIZE));
+    const startGx = game.toGrid(p.x), startGy = game.toGrid(p.y);
+    let initialScore = 0;
+    for (let dy = -spawnR; dy <= spawnR; dy++) {
+        for (let dx = -spawnR; dx <= spawnR; dx++) {
+            const gy = startGy + dy, gx = startGx + dx;
+            if (gy >= 0 && gy < state.GRID_ROWS && gx >= 0 && gx < state.GRID_COLS) {
+                const oldOwner = state.worldGrid[gy][gx];
+                if (oldOwner === 'obstacle' || oldOwner === 'obstacle_gear') continue;
+                if (oldOwner !== p.id) {
+                    if (oldOwner && state.players[oldOwner]) state.players[oldOwner].score = Math.max(0, state.players[oldOwner].score - 1);
+                    state.worldGrid[gy][gx] = p.id;
+                    initialScore++;
+                } else if (p.score === 0) initialScore++;
+            }
+        }
+    }
+    p.score += initialScore;
+    game.rebuildTerritoryRects();
+
+    if (p.ws && p.ws.readyState === 1) {
+        p.ws.send(JSON.stringify({ type: 'ghost_end' }));
     }
 }
 
@@ -1146,6 +1277,56 @@ function killPlayer(id, reason, skipWipe = false) {
 
         p.deaths = (p.deaths || 0) + 1;
 
+        // 早死ペナルティ追跡（CPU・ゴースト状態を除く）
+        if (!p.isCpu && p.spawnTime) {
+            const aliveMs = Date.now() - p.spawnTime;
+            const ipKey = p.ip;
+            // スポーン位置固定の解除判定
+            // 敵に殺された → 時間関係なく通常プレイ扱い → 解除
+            // 自滅（壁/障害物/自爆）→ 5秒以上なら通常プレイ扱い → 解除
+            // 自滅5秒未満 → 位置固定を維持
+            if (ipKey && ipKey !== 'unknown') {
+                const isEnemyKill = reason.includes('に切られた') || reason.includes('正面衝突');
+                if (isEnemyKill || aliveMs >= 5000) {
+                    ipInitialSpawn.delete(ipKey);
+                }
+            }
+            // 通常プレイ（10秒以上生還）でカウント-1（0未満にはならない）
+            if (aliveMs >= 10000 && ipKey && ipKey !== 'unknown') {
+                const rec = ipQuickDeathData.get(ipKey);
+                if (rec && rec.count > 0) {
+                    rec.count = Math.max(0, rec.count - 1);
+                    if (rec.count === 0) {
+                        ipQuickDeathData.delete(ipKey);
+                    }
+                    console.log(`[GHOST] カウント-1 IP=${ipKey} count=${rec ? rec.count : 0}（通常プレイ ${Math.round(aliveMs/1000)}s生還）`);
+                }
+            }
+            if (aliveMs < QUICK_DEATH_THRESHOLD * 1000) {
+                if (ipKey && ipKey !== 'unknown') {
+                    const nowTs = Date.now();
+                    let rec = ipQuickDeathData.get(ipKey) || { count: 0, penaltyUntil: 0 };
+                    rec.count = Math.min(rec.count + 1, GHOST_MAX_STACK);
+                    // 初回GHOST_FREE_COUNT回はペナルティなし、それ以降はペナルティ発動
+                    if (rec.count > GHOST_FREE_COUNT) {
+                        const penaltyMs = Math.min(GHOST_PENALTY_BASE * (rec.count - GHOST_FREE_COUNT) * 1000, GHOST_PENALTY_MAX * 1000);
+                        rec.penaltyUntil = nowTs + penaltyMs;
+                        console.log(`[GHOST] 早死ペナルティ IP=${ipKey} count=${rec.count} penalty=${Math.round(penaltyMs/1000)}s`);
+                    } else {
+                        console.log(`[GHOST] 早死カウント IP=${ipKey} count=${rec.count}/${GHOST_FREE_COUNT}（まだペナルティなし）`);
+                    }
+                    ipQuickDeathData.set(ipKey, rec);
+                    // // チャット禁止はペナルティ発動後（count > GHOST_FREE_COUNT）から（無効化）
+                    // if (rec.count > GHOST_FREE_COUNT) {
+                    //     p.chatMuted = true;
+                    //     if (rec.count === GHOST_FREE_COUNT + 1 && p.ws && p.ws.readyState === 1) {
+                    //         p.ws.send(JSON.stringify({ type: 'chat_muted_notify', count: rec.count }));
+                    //     }
+                    // }
+                }
+            }
+        }
+
         // 戦歴ログをチーム別に蓄積
         const deadName = (p.name || '').replace(/^\[.*?\]\s*/, '');
         let killerName = '';
@@ -1296,6 +1477,7 @@ function endRound() {
         state.roundParticipants.clear();
         state.teamChatLog = {};
         state.teamBattleLog = {};
+        ipInitialSpawn.clear();  // 新ラウンドではスポーン位置をリセット
 
         // 統計リセット
         stats.resetRoundStats();
@@ -1314,9 +1496,13 @@ function endRound() {
                 p.originalColor = p.color;
                 // 名前からチームタグを削除
                 p.name = p.name.replace(/^\[.*?\]\s*/, '');
+                // チーム画像をクリア（個人画像はjoin時のものを復元）
+                delete p.img;
             } else {
                 // TEAM MODE - requestedTeamを復元
                 p.team = p.requestedTeam || '';
+                // チーム戦では個人画像をクリア（チーム画像提案で管理）
+                delete p.img;
                 if (p.team) {
                     const cleanName = p.name.replace(/^\[.*?\]\s*/, '');
                     p.name = `[${p.team}] ${cleanName}`;
@@ -1324,6 +1510,8 @@ function endRound() {
                     p.color = game.getTeamColor(p.team);
                     // たぬきチームは絵文字を🥺に強制
                     if (p.team === TANUKI_TEAM_NAME) p.emoji = '🥺';
+                    // 承認済みチーム画像があれば適用
+                    if (state.teamImg[p.team]) p.img = state.teamImg[p.team];
                 }
             }
             
@@ -1345,6 +1533,7 @@ function endRound() {
         const allPlayerMaster = activePlayers.map(p => {
             const d = { i: p.id, si: p.shortId, n: p.name, c: p.color, e: p.emoji, t: p.team || '' };
             if (p.scale && p.scale !== 1) d.sc = p.scale;
+            if (p.img) d.img = p.img;
             return d;
         });
         game.broadcast({
@@ -1373,11 +1562,38 @@ network.startBroadcastLoop();
 cpu.startCpuLoop();
 cpu.startDebugChainMode();
 
+// グレースフルシャットダウン
+function gracefulShutdown(signal) {
+    console.log(`[SERVER] ${signal} received, shutting down...`);
+    // 新規接続を停止
+    wss.close(() => console.log('[SERVER] WebSocket server closed'));
+    server.close(() => console.log('[SERVER] HTTP server closed'));
+    // DB接続プールを閉じる
+    if (dbPool) {
+        dbPool.end().then(() => {
+            console.log('[DB] Connection pool closed');
+            process.exit(0);
+        }).catch(err => {
+            console.error('[DB] Error closing pool:', err.message);
+            process.exit(1);
+        });
+    } else {
+        process.exit(0);
+    }
+    // 5秒以内に終了しなければ強制終了
+    setTimeout(() => {
+        console.error('[SERVER] Forced shutdown after timeout');
+        process.exit(1);
+    }, 5000);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // DB初期化後にサーバー起動
 game.initDB().then(async () => {
     // AFKタイムアウトデータをDBから読み込み
     await botAuth.loadAfkTimeoutsFromDB();
-    
+
     server.listen(PORT, () => {
         console.log(`[SERVER] Version ${SERVER_VERSION} started on port ${PORT}`);
         if (DEBUG_MODE) console.log('[DEBUG] Debug mode enabled');

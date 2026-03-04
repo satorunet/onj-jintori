@@ -46,6 +46,10 @@ const STATS_MODE = process.argv.includes('toukei');
 const CHAIN_DEBUG = process.argv.includes('chain_debug');  // 連結デバッグモード
 const HELL_OBSTACLES = false;  // 鬼障害物モード（ON/OFF）
 const GEAR_ENABLED = false;    // 歯車モード（ON/OFF）
+const TURTLE_MODE = false;     // 🐢カメさんモード: ブースト＆ジェット無効
+const JET_ENABLED = false;     // ✈️ジェット昇格機能: ブースト未使用20秒後にジェット昇格
+const FORCE_JET = false;       // 🚀強制ジェットモード: 常時ジェット速度
+const IMAGE_ENABLED = false;   // 🖼️画像指定機能: プレイヤー画像・チーム画像
 
 // ============================================================
 // サーバー設定
@@ -135,14 +139,15 @@ const TEAM_COLORS = {
     'GREEN': '#22c55e',
     'YELLOW': '#eab308',
     'HUMAN': '#3b82f6',
-    '🇯🇵たぬき': '#8B4513'
+    '🍂たぬき': '#8B4513',
+    '🇯🇵ONJ': '#9ca3af'
 };
 
 // CPU専用チーム名（プレイヤーは参加不可）
 const CPU_TEAM_NAME = '🇯🇵ONJ';
 
 // たぬきちBOT設定
-const TANUKI_TEAM_NAME = '🇯🇵たぬき';
+const TANUKI_TEAM_NAME = '🍂たぬき';
 const TANUKI_TEAM_COLOR = '#8B4513';   // たぬき色（茶色）
 
 // ============================================================
@@ -201,7 +206,11 @@ const state = {
     swarmLeaderId: null,             // スウォームリーダーID
 
     // イベント: 常時高速モード
-    highSpeedEvent: false            // 高速モードイベント ON/OFF
+    highSpeedEvent: false,           // 高速モードイベント ON/OFF
+
+    // チーム画像
+    teamImg: {},                     // { teamName: base64 } - 承認済みチーム画像
+    teamImgProposal: {}              // { teamName: { img, proposer, voters: Set } } - 提案中
 };
 
 // ============================================================
@@ -351,6 +360,10 @@ module.exports = {
     HELL_OBSTACLES,
     GEAR_ENABLED,
     CHAIN_DEBUG,
+    TURTLE_MODE,
+    JET_ENABLED,
+    FORCE_JET,
+    IMAGE_ENABLED,
 
     // 状態オブジェクト（参照渡し）
     state,
