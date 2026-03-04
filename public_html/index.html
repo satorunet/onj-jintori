@@ -95,10 +95,128 @@
                 </a>
                 <span style="color:#475569; margin:0 4px;">|</span>
                 <a href="https://github.com/satorunet/onj-jintori/commits" target="_blank" rel="noopener" style="color:#64748b; text-decoration:none; font-size:0.8rem;">開発履歴</a>
-                <div style="margin-top:6px;">
-                    <a href="https://satoru.net/" target="_blank" rel="noopener" style="color:#64748b; text-decoration:none; font-size:0.75rem;">&copy;satoru.net</a>
+                <span style="color:#475569; margin:0 4px;">|</span>
+                <a href="#" onclick="document.getElementById('help-modal').style.display='flex';return false;" style="color:#64748b; text-decoration:none; font-size:0.8rem;">遊び方</a>
+                <div style="margin-top:20px;">
+                    <a href="https://hexanaut.io/" target="_blank" rel="noopener" style="color:#475569; text-decoration:none; font-size:0.7rem;">元ネタ：hexanaut.io</a>
+                    <span style="color:#334155; margin:0 4px;">|</span>
+                    <a href="https://satoru.net/" target="_blank" rel="noopener" style="color:#475569; text-decoration:none; font-size:0.7rem;">&copy;satoru.net</a>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal" style="display:none;">
+        <div class="modal-box" style="max-width:500px; max-height:80vh; overflow-y:auto; text-align:left; line-height:1.8;">
+            <div class="modal-title" style="margin-bottom:14px;"><i class="fa-solid fa-book-open" style="margin-right:6px;"></i>遊び方</div>
+            <div style="font-size:0.85rem; color:#cbd5e1;">
+                <p style="margin:0 0 14px; color:#94a3b8; font-size:0.9rem;">陣地を広げてスコア1位を目指すリアルタイム陣取りゲームだよ。</p>
+                <div style="text-align:center; margin-bottom:14px;">
+                    <img src="https://github.com/satorunet/onj-jintori/raw/main/docs/images/game-preview.png" alt="ゲーム画面" style="max-width:100%; border-radius:8px; border:1px solid #334155;">
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #f472b6;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-flag" style="margin-right:5px; color:#f472b6;"></i>基本ルール</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-draw-polygon" style="color:#34d399; width:18px;"></i> 自分の陣地から出て動いて、陣地に戻ると囲んだところが自分の領地になるよ</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-crosshairs" style="color:#fb923c; width:18px;"></i> 敵が引いてる線（トレイル）に触れると相手を倒せる</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-burst" style="color:#f87171; width:18px;"></i> 正面衝突すると両方とも死ぬから気をつけてね</li>
+                        <li><i class="fa-solid fa-clock" style="color:#a78bfa; width:18px;"></i> 1ラウンド2分。終わった時にスコア1位の人が勝ち！</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #22d3ee;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-gamepad" style="margin-right:5px; color:#22d3ee;"></i>操作方法</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-mobile-screen" style="color:#a78bfa; width:18px;"></i> <b>スマホ：</b>画面スワイプで移動</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-keyboard" style="color:#94a3b8; width:18px;"></i> <b>PC：</b>矢印キーで移動</li>
+                        <li><i class="fa-solid fa-bolt" style="color:#facc15; width:18px;"></i> <b>ブースト：</b>スペースキー or ゲージタップ（1.8倍速 / 2秒間）</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #fb923c;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-layer-group" style="margin-right:5px; color:#fb923c;"></i>ゲームモード</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-user" style="color:#38bdf8; width:18px;"></i> <b>個人戦：</b>全員敵。自分の腕だけが頼り</li>
+                        <li><i class="fa-solid fa-users" style="color:#4ade80; width:18px;"></i> <b>チーム戦：</b>同じチーム名の人が味方になって、チーム合計スコアで勝負</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #4ade80;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-people-group" style="margin-right:5px; color:#4ade80;"></i>チーム戦の特徴</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-handshake" style="color:#60a5fa; width:18px;"></i> 味方の陣地は共有だよ</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-comments" style="color:#c084fc; width:18px;"></i> チームチャットで連携できる</li>
+                        <li><i class="fa-solid fa-link" style="color:#2dd4bf; width:18px;"></i> 近くの味方をタップして連結（チェーン）すると一緒に動けるよ</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #f87171;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-heart-pulse" style="margin-right:5px; color:#f87171;"></i>死亡・リスポーン</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-rotate-right" style="color:#34d399; width:18px;"></i> やられても3秒で復活するから大丈夫</li>
+                        <li><i class="fa-solid fa-ghost" style="color:#94a3b8; width:18px;"></i> 短時間に何回も死ぬとゴーストペナルティ（しばらく動けない）くらうよ</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #facc15;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-lightbulb" style="margin-right:5px; color:#facc15;"></i>コツ</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-shield-halved" style="color:#60a5fa; width:18px;"></i> 小さく囲んでコツコツ広げるのが安全だよ</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-fire" style="color:#f97316; width:18px;"></i> 大きく囲むのはハイリスク・ハイリターン</li>
+                        <li><i class="fa-solid fa-wand-magic-sparkles" style="color:#e879f9; width:18px;"></i> 敵のトレイルを狙って倒して陣地を奪っちゃおう！</li>
+                    </ul>
+                </div>
+
+                <div style="margin:18px 0 8px; font-weight:bold; color:#e2e8f0; font-size:0.95rem; border-bottom:1px solid #334155; padding-bottom:6px;">
+                    <i class="fa-solid fa-star" style="margin-right:5px; color:#fbbf24;"></i>いろんな機能たち
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #38bdf8;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-bolt" style="margin-right:5px; color:#facc15;"></i>ブースト</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-gauge-high" style="color:#facc15; width:18px;"></i> 一瞬だけ1.8倍速で移動できる加速機能</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-hand-pointer" style="color:#38bdf8; width:18px;"></i> スペースキー or 画面下のゲージをタップで発動</li>
+                        <li><i class="fa-solid fa-hourglass-half" style="color:#fb923c; width:18px;"></i> 2秒間持続して、5秒のクールダウンがあるよ</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #2dd4bf;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-link" style="margin-right:5px; color:#2dd4bf;"></i>チェーン（連結）</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-people-arrows" style="color:#4ade80; width:18px;"></i> チーム戦で味方の近くに行くと連結できる</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-arrow-pointer" style="color:#60a5fa; width:18px;"></i> 近くの味方をタップ or Enterキーでくっつくよ</li>
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-person-walking" style="color:#a78bfa; width:18px;"></i> リーダーが動くとみんなついていく</li>
+                        <li><i class="fa-solid fa-scissors" style="color:#f87171; width:18px;"></i> 切り離したい時は🔗マークをタップ</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #c084fc;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-comments" style="margin-right:5px; color:#c084fc;"></i>チームチャット</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-message" style="color:#93c5fd; width:18px;"></i> チーム戦中に味方とリアルタイムで会話できる</li>
+                        <li><i class="fa-solid fa-skull-crossbones" style="color:#f87171; width:18px;"></i> キルログやチーム戦況も確認できるよ</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; margin-bottom:10px; border-left:3px solid #f0abfc;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-face-smile" style="margin-right:5px; color:#f0abfc;"></i>絵文字・カスタマイズ</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-icons" style="color:#fbbf24; width:18px;"></i> 好きな絵文字をアイコンにできる</li>
+                        <li><i class="fa-solid fa-flag" style="color:#34d399; width:18px;"></i> 国旗を選んで自分のチームをアピール</li>
+                    </ul>
+                </div>
+
+                <div style="background:#1e293b; border-radius:8px; padding:10px 12px; border-left:3px solid #94a3b8;">
+                    <div style="font-weight:bold; color:#f0f0f0; margin-bottom:6px; font-size:0.9rem;"><i class="fa-solid fa-trophy" style="margin-right:5px; color:#fbbf24;"></i>ランキング</div>
+                    <ul style="margin:0; padding-left:0.5em; list-style:none;">
+                        <li style="margin-bottom:3px;"><i class="fa-solid fa-chart-simple" style="color:#60a5fa; width:18px;"></i> 勝利数やキル数がデータベースに記録される</li>
+                        <li><i class="fa-solid fa-calendar-day" style="color:#fb923c; width:18px;"></i> 今日のランキング・累計ランキングが見れるよ</li>
+                    </ul>
+                </div>
+            </div>
+            <button class="action-btn" style="margin-top:16px;" onclick="document.getElementById('help-modal').style.display='none'">閉じる</button>
         </div>
     </div>
 
